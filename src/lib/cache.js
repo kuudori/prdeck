@@ -1,11 +1,11 @@
 import { openDB } from 'idb';
 
-const DB_NAME = 'reviewbrah';
+const DB_NAME = 'prdeck';
 const DB_VERSION = 1;
 
 let _idbFailed = false;
 
-export const dbp = openDB(DB_NAME, DB_VERSION, {
+const dbp = openDB(DB_NAME, DB_VERSION, {
   upgrade(db, oldVersion) {
     if (oldVersion < 1) {
       db.createObjectStore('prs', { keyPath: 'id' });
@@ -60,12 +60,12 @@ export async function putPRs(prs) {
   await tx.done;
 }
 
-export async function clearPRs() {
-  await (await db()).clear('prs');
-}
-
-export async function getViewed(id) {
-  return (await db()).get('viewed', id);
+export async function replaceAllPRs(prs) {
+  const d = await db();
+  const tx = d.transaction('prs', 'readwrite');
+  await tx.store.clear();
+  for (const pr of prs) tx.store.put(pr);
+  await tx.done;
 }
 
 export async function getAllViewed() {
@@ -84,10 +84,11 @@ export async function setViewed(id, value) {
   await (await db()).put('viewed', value, id);
 }
 
-export async function setViewedMany(entries) {
+export async function resetPR(id) {
   const d = await db();
-  const tx = d.transaction('viewed', 'readwrite');
-  for (const [id, value] of entries) tx.store.put(value, id);
+  const tx = d.transaction(['viewed', 'observed'], 'readwrite');
+  tx.objectStore('viewed').delete(id);
+  tx.objectStore('observed').delete(id);
   await tx.done;
 }
 
@@ -106,14 +107,13 @@ export async function getAllObserved() {
 export async function markObservedBulk(prs) {
   const d = await db();
   const tx = d.transaction('observed', 'readwrite');
+  const existing = new Set(await tx.store.getAllKeys());
   const now = Date.now();
   const newly = [];
   for (const pr of prs) {
-    const existing = await tx.store.get(pr.id);
-    if (!existing) {
-      tx.store.put({ firstSeenAt: now }, pr.id);
-      newly.push(pr.id);
-    }
+    if (existing.has(pr.id)) continue;
+    tx.store.put({ firstSeenAt: now }, pr.id);
+    newly.push(pr.id);
   }
   await tx.done;
   return newly;

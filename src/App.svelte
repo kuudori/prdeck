@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import Settings from './components/Settings.svelte';
+  import Sidebar from './components/Sidebar.svelte';
   import Filters from './components/Filters.svelte';
   import PRList from './components/PRList.svelte';
   import ErrorBanner from './components/ErrorBanner.svelte';
@@ -8,12 +8,12 @@
   import { fanoutFetch, fetchViewerLogin } from './lib/github.js';
   import {
     getAllPRs,
-    putPRs,
+    replaceAllPRs,
     getAllViewed,
     getAllObserved,
     markObservedBulk,
     setViewed,
-    setViewedMany,
+    resetPR,
     getMeta,
     setMeta,
     isReady,
@@ -28,27 +28,22 @@
     userLoginStore,
     refreshingStore,
     lastRefreshAtStore,
-    rateLimitStore,
     cappedStore,
     errorStore,
-    filteredPRsStore,
   } from './lib/stores.js';
+  import { hasToken as tokenPresent, hasScope as scopePresent } from './lib/status.js';
 
   let timer;
-  let showSettings = false;
   let bootDone = false;
 
-  $: hasToken = !!$tokenStore;
-  $: hasScope =
-    $settingsStore.includeInvolves ||
-    ($settingsStore.watchRepos?.length || 0) > 0 ||
-    ($settingsStore.watchOrgs?.length || 0) > 0;
+  $: hasToken = tokenPresent($tokenStore);
+  $: hasScope = scopePresent($settingsStore);
 
   function userError(e) {
     const base = { message: e.message || String(e), kind: e.kind || 'http' };
     switch (e.kind) {
       case 'auth':
-        return { ...base, message: 'GitHub rejected the token. Re-enter or rotate in Settings.', sticky: true };
+        return { ...base, message: 'GitHub rejected the token. Re-enter or rotate.', sticky: true };
       case 'rateLimit':
         return { ...base, message: 'Rate limited.', resetAt: e.resetAt };
       case 'abuse':
@@ -98,29 +93,25 @@
 
   async function refresh(reason) {
     if ($refreshingStore) return;
-    if (!hasToken) {
-      errorStore.push({ kind: 'noPat', message: 'Enter a GitHub PAT in Settings to start.', sticky: true });
-      showSettings = true;
-      return;
-    }
-    if (!hasScope) {
-      errorStore.push({ kind: 'emptyScope', message: 'No scopes configured. Add a watched repo/org or enable "involves me".', sticky: true });
-      showSettings = true;
-      return;
-    }
+    const token = ($tokenStore || '').trim();
+    const settings = $settingsStore;
+    if (!tokenPresent(token)) return;
+    if (!scopePresent(settings)) return;
+    errorStore.clearKind('noPat');
+    errorStore.clearKind('emptyScope');
 
     refreshingStore.set(true);
     try {
       let login = $userLoginStore;
-      if ($settingsStore.includeInvolves && !login) {
+      if (settings.includeInvolves && !login) {
         login = await ensureUserLogin();
         if (!login) return;
       }
 
-      const { prs, capped, rateLimit, empty } = await fanoutFetch(
-        $settingsStore,
+      const { prs, capped, empty } = await fanoutFetch(
+        settings,
         login,
-        $tokenStore,
+        token,
         (partial) => errorStore.push({ kind: 'graphqlPartial', message: `Partial data: ${partial.errors[0].message}` })
       );
       if (empty) return;
@@ -135,12 +126,21 @@
         lastDismissedAtStore.set(dismissed);
       }
 
-      await putPRs(prs);
+      // Replace cache only when we actually got data, to avoid wiping on
+      // transient empty responses. Open PRs that closed and merged PRs that
+      // age past the 7-day window naturally drop out this way.
+      if (prs.length > 0) await replaceAllPRs(prs);
       await setMeta('lastFullRefreshAt', Date.now());
 
       prsStore.set(prs);
-      observedStore.set(await getAllObserved());
-      rateLimitStore.set(rateLimit);
+      if (newlyObserved.length > 0) {
+        observedStore.update((m) => {
+          const next = new Map(m);
+          const now = Date.now();
+          for (const id of newlyObserved) next.set(id, { firstSeenAt: now });
+          return next;
+        });
+      }
       cappedStore.set(capped);
       lastRefreshAtStore.set(Date.now());
 
@@ -148,8 +148,6 @@
       errorStore.clearKind('rateLimit');
       errorStore.clearKind('abuse');
       errorStore.clearKind('network');
-      errorStore.clearKind('noPat');
-      errorStore.clearKind('emptyScope');
     } catch (e) {
       errorStore.push(userError(e));
     } finally {
@@ -196,25 +194,22 @@
     });
   }
 
-  async function markAllVisibleViewed() {
-    const visible = $filteredPRsStore;
-    const entries = visible.map((pr) => [pr.id, {
-      viewedAt: Date.now(),
-      viewedHeadSha: pr.headSha,
-      viewedUpdatedAt: pr.updatedAt,
-    }]);
-    await setViewedMany(entries);
+  async function markUnseen(pr) {
+    await resetPR(pr.id);
     viewedStore.update((m) => {
       const next = new Map(m);
-      for (const [id, v] of entries) next.set(id, v);
+      next.delete(pr.id);
+      return next;
+    });
+    observedStore.update((m) => {
+      const next = new Map(m);
+      next.delete(pr.id);
       return next;
     });
   }
 
-  async function catchUp() {
-    const now = Date.now();
-    await setMeta('lastDismissedAt', now);
-    lastDismissedAtStore.set(now);
+  function onScopeChange() {
+    if (hasToken && hasScope && bootDone) refresh('scope-change');
   }
 
   onMount(async () => {
@@ -233,42 +228,30 @@
   });
 </script>
 
-<main>
-  <header>
-    <h1>Reviewbrah</h1>
-    <div class="header-actions">
-      <button type="button" on:click={() => refresh('manual')} disabled={$refreshingStore}>
-        {$refreshingStore ? '…' : '↻ Refresh'}
-      </button>
-      <button type="button" on:click={catchUp}>Catch up</button>
-      <button type="button" on:click={markAllVisibleViewed}>Mark all viewed</button>
-      <button type="button" on:click={() => (showSettings = !showSettings)}>
-        {showSettings ? 'Close settings' : 'Settings'}
-      </button>
-    </div>
-    {#if $rateLimitStore}
-      <small class="ratelimit">
-        rate-limit: {$rateLimitStore.remaining} pts remaining
-      </small>
+<div class="layout">
+  <Sidebar {onScopeChange} />
+
+  <main>
+    <header>
+      <div class="header-actions">
+        <button type="button" on:click={() => refresh('manual')} disabled={$refreshingStore || !hasToken || !hasScope}>
+          {#if $refreshingStore}<span class="rainbow">updating…</span>{:else}↻ Refresh{/if}
+        </button>
+      </div>
+      {#if $lastRefreshAtStore}
+        <small class="muted">last: {new Date($lastRefreshAtStore).toLocaleTimeString()}</small>
+      {/if}
+    </header>
+
+    <ErrorBanner />
+
+    {#if hasScope}
+      <Filters />
     {/if}
-  </header>
 
-  <ErrorBanner />
-
-  {#if showSettings}
-    <Settings onSave={() => { showSettings = false; refresh('settings'); }} onCatchUp={catchUp} />
-  {/if}
-
-  <Filters />
-
-  <PRList onMarkViewed={markViewed} />
-
-  <footer>
-    {#if $lastRefreshAtStore}
-      <small>Last refresh: {new Date($lastRefreshAtStore).toLocaleTimeString()}</small>
-    {/if}
-  </footer>
-</main>
+    <PRList onMarkViewed={markViewed} onMarkUnseen={markUnseen} />
+  </main>
+</div>
 
 <style>
   :global(body) {
@@ -277,23 +260,24 @@
     background: #f6f8fa;
     color: #222;
   }
+  .layout {
+    display: grid;
+    grid-template-columns: 280px minmax(0, 1fr);
+    min-height: 100vh;
+    align-items: stretch;
+  }
   main {
-    max-width: 960px;
-    margin: 0 auto;
     padding: 1rem;
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
+    min-width: 0;
   }
   header {
     display: flex;
     align-items: center;
     gap: 1rem;
     flex-wrap: wrap;
-  }
-  header h1 {
-    margin: 0;
-    font-size: 1.4rem;
   }
   .header-actions {
     display: flex;
@@ -313,13 +297,36 @@
     opacity: 0.5;
     cursor: not-allowed;
   }
-  .ratelimit {
+  .muted {
     color: #666;
-    font-size: 0.75rem;
+    font-size: 0.72rem;
   }
-  footer {
-    text-align: center;
-    color: #888;
-    padding: 0.5rem;
+  :global(.rainbow) {
+    background-image: linear-gradient(
+      90deg,
+      #ff0040,
+      #ff8000,
+      #ffd000,
+      #00c040,
+      #00b0ff,
+      #8040ff,
+      #ff0040
+    );
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    font-weight: 700;
+    animation: rainbow-flow 1.6s linear infinite;
+  }
+  @keyframes -global-rainbow-flow {
+    from { background-position: 0% 0; }
+    to   { background-position: -200% 0; }
+  }
+  @media (max-width: 720px) {
+    .layout {
+      grid-template-columns: 1fr;
+    }
   }
 </style>
