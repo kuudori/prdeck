@@ -9,7 +9,7 @@
 // Unknown fields are ignored (the token passes). Mirrors how GitHub search
 // degrades gracefully rather than throwing.
 
-const FIELDS = ['title', 'author', 'repo', 'label', 'status', 'review', 'ci', 'is'];
+const FIELDS = ['title', 'author', 'repo', 'label', 'status', 'review', 'ci', 'is', 'created', 'updated', 'merged'];
 
 const STATIC_VALUES = {
   status: ['new', 'updated', 'seen'],
@@ -32,6 +32,27 @@ function eq(a, b) {
   return (a || '').toLowerCase() === (b || '').toLowerCase();
 }
 
+function dateMatch(isoDate, spec) {
+  if (!isoDate) return false;
+  let op = '>=';
+  let raw = spec;
+  if (raw.startsWith('>=')) { op = '>='; raw = raw.slice(2); }
+  else if (raw.startsWith('<=')) { op = '<='; raw = raw.slice(2); }
+  else if (raw.startsWith('>'))  { op = '>';  raw = raw.slice(1); }
+  else if (raw.startsWith('<'))  { op = '<';  raw = raw.slice(1); }
+  else { op = '>='; }
+  const t = new Date(isoDate).getTime();
+  const f = new Date(raw).getTime();
+  if (isNaN(f)) return true;
+  switch (op) {
+    case '>=': return t >= f;
+    case '<=': return t <= f;
+    case '>':  return t > f;
+    case '<':  return t < f;
+    default:   return true;
+  }
+}
+
 const FIELD_MATCHERS = {
   title: (pr, v) => (pr.title || '').toLowerCase().includes((v || '').toLowerCase()),
   author: (pr, v) => eq(pr.author, v),
@@ -45,6 +66,9 @@ const FIELD_MATCHERS = {
     if (lv === 'draft') return !!pr.isDraft;
     return false;
   },
+  created: (pr, v) => dateMatch(pr.createdAt, v),
+  updated: (pr, v) => dateMatch(pr.updatedAt, v),
+  merged: (pr, v) => dateMatch(pr.mergedAt, v),
 };
 
 // Tokenize a query string. Returns { tokens, error } where error is

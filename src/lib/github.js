@@ -68,7 +68,8 @@ function scopeAxes(cfg, userLogin) {
 
 function buildQueries(cfg, userLogin) {
   const axes = scopeAxes(cfg, userLogin);
-  return axes.map((axis) => `${BASE_OPEN} ${axis}`);
+  const since = isoDaysAgo(90);
+  return axes.map((axis) => `${BASE_OPEN} ${axis} created:>=${since}`);
 }
 
 function buildMergedQueries(cfg, userLogin, sinceDate) {
@@ -222,7 +223,13 @@ export async function fanoutFetch(cfg, userLogin, token, onPartial) {
   const capped = [];
   for (const r of results) {
     if (r.capHit) capped.push(r.query);
-    for (const node of r.nodes) byId.set(node.id, node);
+    for (const node of r.nodes) {
+      if (!node || !node.id) continue;
+      const prev = byId.get(node.id);
+      if (!prev || (node.updatedAt || '') >= (prev.updatedAt || '')) {
+        byId.set(node.id, node);
+      }
+    }
   }
   return {
     prs: [...byId.values()].map(normalizePR),

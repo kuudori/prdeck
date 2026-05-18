@@ -38,6 +38,7 @@
 
   $: hasToken = tokenPresent($tokenStore);
   $: hasScope = scopePresent($settingsStore);
+  $: if (bootDone && $settingsStore.intervalMinutes) scheduleTick();
 
   function userError(e) {
     const base = { message: e.message || String(e), kind: e.kind || 'http' };

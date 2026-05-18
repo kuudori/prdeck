@@ -24,7 +24,11 @@ export function classify(pr, viewed, observed, lastDismissedAt) {
     return STATUS.SEEN;
   }
   const obs = observed.get(pr.id);
-  if (obs && (obs.firstSeenAt || 0) <= (lastDismissedAt || 0)) return STATUS.SEEN;
+  if (obs && (obs.firstSeenAt || 0) <= (lastDismissedAt || 0)) {
+    const updTime = new Date(pr.updatedAt).getTime();
+    if (updTime > (lastDismissedAt || 0)) return STATUS.UPDATED;
+    return STATUS.SEEN;
+  }
   return STATUS.NEW;
 }
 
