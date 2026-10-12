@@ -89,8 +89,8 @@
     ownersLoading = true;
     ownersError = '';
     try {
-      const { user, orgs } = await fetchViewerAndOrgs(tok);
-      ownersCacheStore.set({ user, orgs, fetchedAt: Date.now() });
+      const { user, orgs, tokenInfo } = await fetchViewerAndOrgs(tok);
+      ownersCacheStore.set({ user, orgs, tokenInfo, fetchedAt: Date.now() });
       if (user) {
         userLoginStore.set(user.login);
         try { await setMeta('userLogin', user.login); } catch {}
@@ -152,9 +152,27 @@
   $: extraOrgs = selectedOrgLogins.filter((l) => !viewerOrgs.some((o) => eqLogin(o.login, l)));
   $: extraUsers = selectedUserLogins.filter((l) => !eqLogin(l, viewerUser?.login));
 
+  // Why orgs might be missing, from what the token reported. null = nothing to say.
+  $: tokenInfo = $ownersCacheStore?.tokenInfo || null;
+  $: orgsHint = (() => {
+    if (tokenInfo?.sso) return 'sso';
+    if (viewerOrgs.length > 0) return null;
+    if (!tokenInfo || tokenInfo.kind === 'fine-grained') return 'fine-grained';
+    if (!tokenInfo.readOrg) return 'scope';
+    return null;
+  })();
+
   function eqLogin(a, b) {
     return (a || '').toLowerCase() === (b || '').toLowerCase();
   }
+
+  // Pre-filled token forms. Fine-grained links can't preselect repositories;
+  // classic ones take scopes only.
+  const FINE_GRAINED_URL =
+    'https://github.com/settings/personal-access-tokens/new?name=prdeck' +
+    '&description=Read-only+token+for+prdeck&expires_in=90' +
+    '&pull_requests=read&contents=read&statuses=read';
+  const CLASSIC_URL = 'https://github.com/settings/tokens/new?scopes=repo,read:org&description=prdeck';
 
   let ownerInput = '';
   let ownerAdding = false;
@@ -202,8 +220,9 @@
   }
 
   onMount(() => {
-    // First load: if we have a token but no cached owners, fetch them.
-    if ($tokenStore && !$ownersCacheStore) loadOwners();
+    // First load: if we have a token but no cached owners (or a cache from
+    // before tokenInfo existed), fetch them.
+    if ($tokenStore && !$ownersCacheStore?.tokenInfo) loadOwners();
     // For any owner already selected, make sure we have a repo list to show.
     for (const login of [...selectedUserLogins, ...selectedOrgLogins]) {
       ensureReposFor(login);
@@ -229,8 +248,26 @@
           on:keydown={(e) => { if (e.key === 'Enter') saveToken(); }} />
         <div class="row">
           <button type="button" class="primary" on:click={saveToken} disabled={!(token || '').trim()}>Save</button>
-          <small class="hint">read-only; see README → Token safety</small>
         </div>
+        <details class="token-help" open={!$tokenStore}>
+          <summary>Which token?</summary>
+          <p>
+            <strong>Fine-grained</strong>, recommended:
+            <a href={FINE_GRAINED_URL} target="_blank" rel="noopener noreferrer">create a read-only one ↗</a>
+          </p>
+          <ul>
+            <li><em>Resource owner</em>: you, or your org to include its private repos.</li>
+            <li><em>Repository access</em>: "Public repositories" is enough for public repos anywhere; for private ones, pick them.</li>
+            <li>It can't list your orgs; add them by name in step 2.</li>
+          </ul>
+          <p>
+            <strong>Classic</strong>, for private repos across several orgs:
+            <a href={CLASSIC_URL} target="_blank" rel="noopener noreferrer">create one ↗</a>
+            (<code>repo</code>, <code>read:org</code>). <code>repo</code> also allows writes, so pick a short expiry. If your
+            org uses single sign-on, click <em>Configure SSO</em> next to the token afterwards.
+          </p>
+          <p class="muted">The token stays in this browser only and is sent to api.github.com only.</p>
+        </details>
       {:else}
         <div class="row token-set">
           <span class="ok">✓ token saved</span>
@@ -298,11 +335,21 @@
             </li>
           {/each}
         </ul>
-        {#if viewerOrgs.length === 0}
+        {#if orgsHint === 'fine-grained'}
           <small class="hint">
-            This token can't list your orgs. Fine-grained tokens only see the owner they were
-            created for. Add an org by name (public repos work with any token), or use a classic
-            token with <code>read:org</code>.
+            Fine-grained tokens can't list your orgs. Add yours by name below; public repos work
+            with any token.
+          </small>
+        {:else if orgsHint === 'scope'}
+          <small class="hint">
+            This token is missing the <code>read:org</code> scope, so orgs that hide membership
+            don't show. Add the scope, or add orgs by name below.
+          </small>
+        {:else if orgsHint === 'sso'}
+          <small class="hint">
+            Some orgs hide their data until this token is authorized for their single sign-on.
+            <a href={tokenInfo.sso.url} target="_blank" rel="noopener noreferrer">Authorize it on GitHub</a>,
+            then reload the list (↻).
           </small>
         {/if}
         <form class="add-owner" on:submit|preventDefault={addOwner}>
@@ -550,6 +597,13 @@
   }
   .login { font-family: ui-monospace, monospace; font-size: 0.8rem; }
   .add-owner { display: flex; gap: 0.3rem; }
+  .token-help { font-size: 0.74rem; color: #555; }
+  .token-help summary { cursor: pointer; color: #0969da; }
+  .token-help p { margin: 0.35rem 0; }
+  .token-help ul { margin: 0.2rem 0; padding-left: 1.1rem; }
+  .token-help li { margin: 0.15rem 0; }
+  .token-help .muted { color: #888; }
+  .token-help code { font-size: 0.7rem; }
   .add-owner input { flex: 1; min-width: 0; }
   .kind { color: #888; font-size: 0.68rem; margin-left: auto; }
 

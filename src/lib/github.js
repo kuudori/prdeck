@@ -214,7 +214,7 @@ export async function runQuery(query, variables, token) {
   if (json.errors?.length && !json.data) {
     throw appError('graphql', json.errors[0].message, { errors: json.errors });
   }
-  return { data: json.data, errors: json.errors || [] };
+  return { data: json.data, errors: json.errors || [], headers: res.headers };
 }
 
 export async function fetchViewerLogin(token) {
@@ -222,11 +222,31 @@ export async function fetchViewerLogin(token) {
   return data?.viewer?.login || null;
 }
 
+// What the token can see, to explain a missing org instead of guessing.
+//   kind:  'fine-grained' | 'classic'. Fine-grained tokens get no scopes header.
+//   readOrg: classic token has a scope that lets it list private memberships.
+//   sso: GitHub's X-GitHub-SSO header, set when an org hides results until
+//        the token is authorized for its single sign-on.
+export function describeToken(token, scopesHeader, ssoHeader) {
+  const t = (token || '').trim();
+  const kind = t.startsWith('github_pat_') || (scopesHeader == null && !/^gh[opsu]_/.test(t)) ? 'fine-grained' : 'classic';
+  const scopes = (scopesHeader || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const readOrg = scopes.some((s) => s === 'read:org' || s === 'write:org' || s === 'admin:org');
+  let sso = null;
+  if (ssoHeader) {
+    const url = /url=(\S+)/.exec(ssoHeader)?.[1];
+    sso = { url: url && url.startsWith('https://github.com/') ? url : 'https://github.com/settings/tokens' };
+  }
+  return { kind, readOrg, sso };
+}
+
 export async function fetchViewerAndOrgs(token) {
-  const { data } = await runQuery(VIEWER_ORGS_QUERY, {}, token);
+  const { data, headers } = await runQuery(VIEWER_ORGS_QUERY, {}, token);
+  const tokenInfo = describeToken(token, headers.get('x-oauth-scopes'), headers.get('x-github-sso'));
   const v = data?.viewer;
-  if (!v) return { user: null, orgs: [] };
+  if (!v) return { user: null, orgs: [], tokenInfo };
   return {
+    tokenInfo,
     user: { login: v.login, avatarUrl: v.avatarUrl, kind: 'user' },
     orgs: (v.organizations?.nodes || []).map((o) => ({
       login: o.login,
