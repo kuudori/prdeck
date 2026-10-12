@@ -43,6 +43,13 @@ query {
   }
 }`;
 
+const ORGS_FROM_PRS_QUERY = `
+query OrgsFromPRs($q: String!) {
+  search(query: $q, type: ISSUE, first: 100) {
+    nodes { ... on PullRequest { repository { owner { __typename login avatarUrl } } } }
+  }
+}`;
+
 const OWNER_QUERY = `
 query Owner($login: String!) {
   repositoryOwner(login: $login) { __typename login avatarUrl }
@@ -245,16 +252,40 @@ export async function fetchViewerAndOrgs(token) {
   const tokenInfo = describeToken(token, headers.get('x-oauth-scopes'), headers.get('x-github-sso'));
   const v = data?.viewer;
   if (!v) return { user: null, orgs: [], tokenInfo };
+  const orgs = (v.organizations?.nodes || []).map((o) => ({
+    login: o.login,
+    name: o.name || o.login,
+    avatarUrl: o.avatarUrl,
+    kind: 'org',
+  }));
+  for (const o of await orgsFromPRs(v.login, token)) {
+    if (!orgs.some((x) => x.login.toLowerCase() === o.login.toLowerCase())) orgs.push(o);
+  }
   return {
     tokenInfo,
     user: { login: v.login, avatarUrl: v.avatarUrl, kind: 'user' },
-    orgs: (v.organizations?.nodes || []).map((o) => ({
-      login: o.login,
-      name: o.name || o.login,
-      avatarUrl: o.avatarUrl,
-      kind: 'org',
-    })),
+    orgs,
   };
+}
+
+// Orgs owning the repos of your 100 most recently updated PRs, busiest first.
+// Covers what the membership list can't: fine-grained tokens (no org list
+// at all), hidden memberships, and orgs you contribute to without being a
+// member. Best effort: a failure just means no suggestions.
+async function orgsFromPRs(login, token) {
+  try {
+    const { data } = await runQuery(ORGS_FROM_PRS_QUERY, { q: `is:pr involves:${login} sort:updated-desc` }, token);
+    const counts = new Map();
+    for (const n of data?.search?.nodes || []) {
+      const o = n?.repository?.owner;
+      if (o?.__typename !== 'Organization') continue;
+      const prev = counts.get(o.login);
+      counts.set(o.login, { login: o.login, name: o.login, avatarUrl: o.avatarUrl, kind: 'org', suggested: true, prs: (prev?.prs || 0) + 1 });
+    }
+    return [...counts.values()].sort((a, b) => b.prs - a.prs);
+  } catch {
+    return [];
+  }
 }
 
 // Look up an org or user by name. The viewer's own org list can be

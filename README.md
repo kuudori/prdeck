@@ -45,7 +45,7 @@ Pushing to `main` builds and deploys to GitHub Pages (`.github/workflows/pages.y
 The left sidebar walks you through three steps.
 
 1. **Token.** Paste a GitHub personal access token. *Which token?* under the input links to pre-filled, read-only token forms and explains fine-grained vs classic (see [Token safety](#token-safety)).
-2. **Owners.** Pick yourself and any orgs whose PRs you want to see. If an org is missing, a hint says why (fine-grained token, missing `read:org` scope, or single sign-on not authorized), and you can type its name into *Add org or user*.
+2. **Owners.** Pick yourself and any orgs whose PRs you want to see. Besides the orgs your token can list, the orgs behind your 100 most recent PRs are offered too ("from your PRs"), so fine-grained tokens get a useful list. If an org is still missing, a hint says why (fine-grained token, missing `read:org` scope, or single sign-on not authorized), and you can type its name into *Add org or user*.
 3. **Repos.** Pick the specific repos. You can also tick "Also: PRs involving me" to include anything that mentions you anywhere.
 
 ## Tabs

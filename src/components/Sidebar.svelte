@@ -156,7 +156,7 @@
   $: tokenInfo = $ownersCacheStore?.tokenInfo || null;
   $: orgsHint = (() => {
     if (tokenInfo?.sso) return 'sso';
-    if (viewerOrgs.length > 0) return null;
+    if (viewerOrgs.some((o) => !o.suggested)) return null;
     if (!tokenInfo || tokenInfo.kind === 'fine-grained') return 'fine-grained';
     if (!tokenInfo.readOrg) return 'scope';
     return null;
@@ -312,7 +312,7 @@
               <label class:on={selectedOrgLogins.includes(o.login)}>
                 <input type="checkbox" checked={selectedOrgLogins.includes(o.login)} on:change={() => toggleOrg(o.login)} />
                 <span class="login">{o.login}</span>
-                <span class="kind">org</span>
+                <span class="kind" title={o.suggested ? `Found in ${o.prs} of your recent PRs` : ''}>{o.suggested ? 'from your PRs' : 'org'}</span>
               </label>
             </li>
           {/each}
@@ -337,13 +337,14 @@
         </ul>
         {#if orgsHint === 'fine-grained'}
           <small class="hint">
-            Fine-grained tokens can't list your orgs. Add yours by name below; public repos work
-            with any token.
+            Fine-grained tokens can't list your orgs{viewerOrgs.length ? '; the ones above come from your recent PRs' : ''}.
+            Missing one? Add it by name below; public repos work with any token.
           </small>
         {:else if orgsHint === 'scope'}
           <small class="hint">
             This token is missing the <code>read:org</code> scope, so orgs that hide membership
-            don't show. Add the scope, or add orgs by name below.
+            don't show{viewerOrgs.length ? ' (the ones above come from your recent PRs)' : ''}. Add the scope, or add
+            orgs by name below.
           </small>
         {:else if orgsHint === 'sso'}
           <small class="hint">
