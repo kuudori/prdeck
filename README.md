@@ -24,7 +24,9 @@ That produces `dist/index.html`. Put it anywhere and open it in a browser. When 
 
 The page holds a GitHub token, so:
 
-- Use a **fine-grained, read-only** token with an expiry date. Click *edit* in the Token section to rotate it.
+- Use a read-only token with an expiry date. Click *edit* in the Token section to rotate it.
+  - **Fine-grained token** (narrowest): it only covers private repos of the single owner it was created for, and it can't list your orgs. Public repos in any org still work: add the org by name in the Owners step.
+  - **Classic token** with `repo` and `read:org`: needed for private repos across several orgs. Broader, since classic `repo` also grants write access, so give it a short expiry.
 - The page carries a Content-Security-Policy: it runs only its own script (pinned by hash) and can send requests only to `api.github.com`. Injected code can't run, and the token can't be sent anywhere else.
 - Every GitHub Pages site under the same account shares one origin (`kuudori.github.io`) and so one `localStorage`. Don't host other pages there that you don't trust.
 
@@ -43,7 +45,7 @@ Pushing to `main` builds and deploys to GitHub Pages (`.github/workflows/pages.y
 The left sidebar walks you through three steps.
 
 1. **Token.** Paste a fine-grained GitHub personal access token with `repo:read` and `pull-requests:read`.
-2. **Owners.** Pick yourself and any orgs whose PRs you want to see.
+2. **Owners.** Pick yourself and any orgs whose PRs you want to see. If an org is missing (fine-grained tokens can't list them), type its name into *Add org or user*.
 3. **Repos.** Pick the specific repos. You can also tick "Also: PRs involving me" to include anything that mentions you anywhere.
 
 ## Tabs

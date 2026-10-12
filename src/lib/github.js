@@ -43,6 +43,11 @@ query {
   }
 }`;
 
+const OWNER_QUERY = `
+query Owner($login: String!) {
+  repositoryOwner(login: $login) { __typename login avatarUrl }
+}`;
+
 const OWNER_REPOS_QUERY = `
 query OwnerRepos($login: String!, $cursor: String) {
   repositoryOwner(login: $login) {
@@ -230,6 +235,16 @@ export async function fetchViewerAndOrgs(token) {
       kind: 'org',
     })),
   };
+}
+
+// Look up an org or user by name. The viewer's own org list can be
+// incomplete (fine-grained tokens only see the owner they were made for),
+// so owners can also be added by name. Returns null if it doesn't exist.
+export async function fetchOwner(login, token) {
+  const { data } = await runQuery(OWNER_QUERY, { login }, token);
+  const o = data?.repositoryOwner;
+  if (!o) return null;
+  return { login: o.login, avatarUrl: o.avatarUrl, kind: o.__typename === 'Organization' ? 'org' : 'user' };
 }
 
 export async function fetchOwnerRepos(login, token, { maxPages = 3 } = {}) {

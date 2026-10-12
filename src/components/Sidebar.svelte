@@ -9,7 +9,7 @@
     sidebarCollapsedStore,
   } from '../lib/stores.js';
   import { setMeta, clearAll } from '../lib/cache.js';
-  import { fetchViewerAndOrgs, fetchOwnerRepos } from '../lib/github.js';
+  import { fetchViewerAndOrgs, fetchOwnerRepos, fetchOwner } from '../lib/github.js';
   import { notificationsSupported } from '../lib/watch.js';
 
   export let onScopeChange = () => {};
@@ -146,6 +146,43 @@
     commit();
   }
   function reloadOwnersClick() { loadOwners(); }
+
+  // Owners added by name stay listed while selected; they aren't in the
+  // token's own org list.
+  $: extraOrgs = selectedOrgLogins.filter((l) => !viewerOrgs.some((o) => eqLogin(o.login, l)));
+  $: extraUsers = selectedUserLogins.filter((l) => !eqLogin(l, viewerUser?.login));
+
+  function eqLogin(a, b) {
+    return (a || '').toLowerCase() === (b || '').toLowerCase();
+  }
+
+  let ownerInput = '';
+  let ownerAdding = false;
+  let ownerAddError = '';
+
+  async function addOwner() {
+    const name = ownerInput.trim().replace(/^@/, '').replace(/^https?:\/\/github\.com\//, '').replace(/\/.*$/, '');
+    if (!name) return;
+    ownerAdding = true;
+    ownerAddError = '';
+    try {
+      const owner = await fetchOwner(name, ($tokenStore || '').trim());
+      if (!owner) {
+        ownerAddError = `No org or user named "${name}".`;
+        return;
+      }
+      const selected = owner.kind === 'org' ? selectedOrgLogins : selectedUserLogins;
+      if (!selected.some((l) => eqLogin(l, owner.login))) {
+        if (owner.kind === 'org') toggleOrg(owner.login);
+        else toggleUser(owner.login);
+      }
+      ownerInput = '';
+    } catch (e) {
+      ownerAddError = e.message || 'Lookup failed.';
+    } finally {
+      ownerAdding = false;
+    }
+  }
   function reloadOwnerRepos(login) { loadReposFor(login); }
 
   const NOTIF_LABEL = { granted: 'allowed', denied: 'blocked', default: 'not asked' };
@@ -192,7 +229,7 @@
           on:keydown={(e) => { if (e.key === 'Enter') saveToken(); }} />
         <div class="row">
           <button type="button" class="primary" on:click={saveToken} disabled={!(token || '').trim()}>Save</button>
-          <small class="hint">repo:read · pull-requests:read</small>
+          <small class="hint">read-only; see README → Token safety</small>
         </div>
       {:else}
         <div class="row token-set">
@@ -242,7 +279,37 @@
               </label>
             </li>
           {/each}
+          {#each extraOrgs as login}
+            <li>
+              <label class="on" title="Added by name. Uncheck to remove.">
+                <input type="checkbox" checked on:change={() => toggleOrg(login)} />
+                <span class="login">{login}</span>
+                <span class="kind">org</span>
+              </label>
+            </li>
+          {/each}
+          {#each extraUsers as login}
+            <li>
+              <label class="on" title="Added by name. Uncheck to remove.">
+                <input type="checkbox" checked on:change={() => toggleUser(login)} />
+                <span class="login">{login}</span>
+                <span class="kind">user</span>
+              </label>
+            </li>
+          {/each}
         </ul>
+        {#if viewerOrgs.length === 0}
+          <small class="hint">
+            This token can't list your orgs. Fine-grained tokens only see the owner they were
+            created for. Add an org by name (public repos work with any token), or use a classic
+            token with <code>read:org</code>.
+          </small>
+        {/if}
+        <form class="add-owner" on:submit|preventDefault={addOwner}>
+          <input type="text" placeholder="Add org or user by name" bind:value={ownerInput} disabled={ownerAdding} />
+          <button type="submit" disabled={ownerAdding || !ownerInput.trim()}>{ownerAdding ? '…' : 'Add'}</button>
+        </form>
+        {#if ownerAddError}<small class="err">{ownerAddError}</small>{/if}
       {/if}
       {#if ownersError}<small class="err">{ownersError}</small>{/if}
     {/if}
@@ -482,6 +549,8 @@
     background: #ddf4ff;
   }
   .login { font-family: ui-monospace, monospace; font-size: 0.8rem; }
+  .add-owner { display: flex; gap: 0.3rem; }
+  .add-owner input { flex: 1; min-width: 0; }
   .kind { color: #888; font-size: 0.68rem; margin-left: auto; }
 
   .results {
