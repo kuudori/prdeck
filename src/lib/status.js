@@ -52,15 +52,3 @@ export function hasScope(settings) {
     (settings.watchUsers?.length || 0) > 0
   );
 }
-
-export const INITIAL_FILTERS = {
-  repoInclude: [],
-  repoExclude: [],
-  authors: [],
-  authorsExclude: [],
-  ciStates: [],
-  reviewDecisions: [],
-  statuses: [],
-  draft: 'all',
-  text: '',
-};

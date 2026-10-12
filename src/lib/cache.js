@@ -104,11 +104,10 @@ export async function getAllObserved() {
   return map;
 }
 
-export async function markObservedBulk(prs) {
+export async function markObservedBulk(prs, now = Date.now()) {
   const d = await db();
   const tx = d.transaction('observed', 'readwrite');
   const existing = new Set(await tx.store.getAllKeys());
-  const now = Date.now();
   const newly = [];
   for (const pr of prs) {
     if (existing.has(pr.id)) continue;

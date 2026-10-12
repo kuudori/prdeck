@@ -1,20 +1,17 @@
 <script>
   import PRRow from './PRRow.svelte';
-  import {
-    annotatedPRsStore,
-    filtersStore,
-    sortStore,
-    settingsStore,
-    tokenStore,
-    viewModeStore,
-    resetFilters,
-  } from '../lib/stores.js';
-  import { STATUS, STATE, hasToken as tokenPresent, hasScope as scopePresent } from '../lib/status.js';
+  import SearchBar from './SearchBar.svelte';
+  import { annotatedPRsStore, filtersStore, sortStore, settingsStore, viewModeStore, setQuery } from '../lib/stores.js';
+  import { STATUS, STATE } from '../lib/status.js';
   import { buildQueryMatcher } from '../lib/query.js';
 
   export let onMarkViewed = () => {};
   export let onMarkUnseen = () => {};
   export let onToggleWatch = () => {};
+  // Changing the merged window changes what gets fetched.
+  export let onScopeChange = () => {};
+
+  const MERGED_WINDOWS = [1, 3, 7, 14, 30];
 
   const statusOrder = { [STATUS.NEW]: 0, [STATUS.UPDATED]: 1, [STATUS.SEEN]: 2 };
 
@@ -31,50 +28,25 @@
   }
   function cmp(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
 
-  function exclusionReason(pr, f, queryMatch) {
-    if (f.repoInclude.length && !f.repoInclude.includes(pr.repo)) return `repo not in include list`;
-    if (f.repoExclude.includes(pr.repo)) return `repo excluded`;
-    if (f.authors.length && !f.authors.includes(pr.author)) return `author not in include list`;
-    if ((f.authorsExclude || []).includes(pr.author)) return `author excluded`;
-    if (f.ciStates.length && !f.ciStates.includes(pr.ciState)) return `CI: ${pr.ciState.toLowerCase()}`;
-    if (f.reviewDecisions.length && !f.reviewDecisions.includes(pr.reviewDecision)) return `review: ${(pr.reviewDecision || 'none').toLowerCase()}`;
-    if (f.statuses.length && !f.statuses.includes(pr.status)) return `status: ${pr.status.toLowerCase()}`;
-    if (f.draft === 'only' && !pr.isDraft) return `not a draft`;
-    if (f.draft === 'exclude' && pr.isDraft) return `is a draft`;
-    if (queryMatch && !queryMatch(pr)) return `query`;
-    return null;
-  }
-
   $: openPRs = $annotatedPRsStore.filter((p) => (p.state || STATE.OPEN) === STATE.OPEN);
   $: mergedPRs = $annotatedPRsStore.filter((p) => p.state === STATE.MERGED);
+  $: openUnseen = openPRs.filter((p) => p.status !== STATUS.SEEN).length;
+  $: mergedUnseen = mergedPRs.filter((p) => p.status !== STATUS.SEEN).length;
+  $: merged = $viewModeStore === 'merged';
+  $: pool = merged ? mergedPRs : openPRs;
+  $: mergedDays = $settingsStore.mergedDays;
+  $: mergedWindows = MERGED_WINDOWS.includes(mergedDays) ? MERGED_WINDOWS : [...MERGED_WINDOWS, mergedDays].sort((a, b) => a - b);
 
-  $: openUnseenCount = openPRs.filter((p) => p.status === STATUS.NEW || p.status === STATUS.UPDATED).length;
-  $: mergedUnseenCount = mergedPRs.filter((p) => p.status === STATUS.NEW || p.status === STATUS.UPDATED).length;
-
-  $: pool = $viewModeStore === 'merged' ? mergedPRs : openPRs;
-
-  // Rebuilt only when the query text changes — not on every viewed/observed update.
+  // Rebuilt only when the query text changes, not on every viewed/observed update.
   $: queryMatch = buildQueryMatcher($filtersStore.text);
-
-  let visible = [];
-  let hidden = [];
-  $: {
-    const v = [];
-    const h = [];
-    for (const pr of pool) {
-      const reason = exclusionReason(pr, $filtersStore, queryMatch);
-      if (reason) h.push({ pr, reason });
-      else v.push(pr);
-    }
-    visible = v;
-    hidden = h;
-  }
+  $: visible = queryMatch ? pool.filter(queryMatch) : pool;
+  $: hidden = queryMatch ? pool.filter((p) => !queryMatch(p)) : [];
 
   $: sorted = (() => {
     const key = $sortStore.key;
     const dir = $sortStore.dir === 'asc' ? 1 : -1;
     return [...visible].sort((a, b) => {
-      // NEW/UPDATED always above SEEN, regardless of user sort.
+      // New/updated always above seen, regardless of sort.
       const sa = statusOrder[a.status] ?? 9;
       const sb = statusOrder[b.status] ?? 9;
       if (sa !== sb) return sa - sb;
@@ -84,162 +56,126 @@
     });
   })();
 
-  $: total = pool.length;
-
-  function setView(v) {
-    viewModeStore.set(v);
+  function setMergedDays(days) {
+    settingsStore.update((s) => ({ ...s, mergedDays: days }));
+    onScopeChange();
   }
-  $: hasScope = scopePresent($settingsStore);
-  $: hasToken = tokenPresent($tokenStore);
 </script>
 
 <section class="list">
-  <div class="tabs">
-    <button
-      type="button"
-      class="tab"
-      class:active={$viewModeStore === 'open'}
-      on:click={() => setView('open')}>
-      opened
-      {#if openUnseenCount > 0}<span class="badge">{openUnseenCount}</span>{/if}
+  <div class="tabs" role="tablist">
+    <button type="button" role="tab" class="tab" class:active={!merged} aria-selected={!merged} on:click={() => viewModeStore.set('open')}>
+      Open
+      <span class="count">{openPRs.length}</span>
+      {#if openUnseen > 0}<span class="badge">{openUnseen} new</span>{/if}
     </button>
-    <button
-      type="button"
-      class="tab"
-      class:active={$viewModeStore === 'merged'}
-      on:click={() => setView('merged')}>
-      recently merged
-      {#if mergedUnseenCount > 0}<span class="badge">{mergedUnseenCount}</span>{/if}
-    </button>
-    <span class="meta">{visible.length} of {total}{hidden.length > 0 ? ` · ${hidden.length} hidden` : ''}</span>
-    {#if hidden.length > 0}
-      <button type="button" class="link" on:click={resetFilters}>clear filters</button>
-    {/if}
+    <div class="tab-wrap" class:active={merged}>
+      <button type="button" role="tab" class="tab" class:active={merged} aria-selected={merged} on:click={() => viewModeStore.set('merged')}>
+        Merged
+        {#if mergedUnseen > 0}<span class="badge merged-badge">{mergedUnseen} new</span>{/if}
+      </button>
+      <select aria-label="Merged window" value={mergedDays} on:change={(e) => setMergedDays(Number(e.currentTarget.value))}>
+        {#each mergedWindows as d}<option value={d}>{d === 1 ? 'last day' : `last ${d} days`}</option>{/each}
+      </select>
+    </div>
   </div>
 
-  {#if total === 0}
+  <SearchBar shown={visible.length} total={pool.length} />
+
+  {#if pool.length === 0}
     <div class="empty">
-      {#if !hasToken}
-        It's empty. Add a GitHub token in the sidebar to start.
-      {:else if !hasScope}
-        It's empty, please configure in the sidebar.
-      {:else if $viewModeStore === 'merged'}
-        Nothing merged in the last {$settingsStore.mergedDays} days.
+      {#if merged}
+        Nothing merged in the last {mergedDays === 1 ? 'day' : `${mergedDays} days`}.
       {:else}
-        No open PRs match your scope yet. Try refreshing.
+        No open PRs in what you track yet. Try <strong>Tracking</strong> in the header, or refresh.
       {/if}
+    </div>
+  {:else if visible.length === 0}
+    <div class="empty">
+      Nothing matches your search. <button type="button" class="link" on:click={() => setQuery('')}>Clear it</button>
     </div>
   {:else}
     {#each sorted as pr (pr.id)}
       <PRRow {pr} {onMarkViewed} {onMarkUnseen} {onToggleWatch} />
     {/each}
+  {/if}
 
-    {#if hidden.length > 0}
-      <details class="hidden-details">
-        <summary>{hidden.length} hidden — why?</summary>
-        <div class="hidden-list">
-          {#each hidden as { pr, reason } (pr.id)}
-            <div class="hidden-item">
-              <div class="reason-bar">hidden: {reason}</div>
-              <PRRow {pr} {onMarkViewed} {onMarkUnseen} {onToggleWatch} />
-            </div>
-          {/each}
-        </div>
-      </details>
-    {/if}
+  {#if hidden.length > 0}
+    <details class="hidden">
+      <summary>{hidden.length} more hidden by your search. Show them</summary>
+      <div class="hidden-list">
+        {#each hidden as pr (pr.id)}
+          <PRRow {pr} {onMarkViewed} {onMarkUnseen} {onToggleWatch} />
+        {/each}
+      </div>
+    </details>
   {/if}
 </section>
 
 <style>
   .list {
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    background: white;
-    overflow: hidden;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    background: #fff;
   }
   .tabs {
     display: flex;
-    gap: 0.2rem;
-    align-items: center;
-    padding: 0.3rem 0.5rem;
-    border-bottom: 1px solid #eee;
-    background: #fafafa;
+    align-items: flex-end;
+    gap: 4px;
+    padding: 8px 12px 0;
+    border-bottom: 1px solid #d0d7de;
+    flex-wrap: wrap;
   }
+  .tab, .tab-wrap { margin-bottom: -1px; }
   .tab {
-    background: none;
-    border: 1px solid transparent;
-    border-radius: 4px;
-    padding: 0.3rem 0.6rem;
-    font: inherit;
-    font-size: 0.8rem;
-    color: #555;
-    cursor: pointer;
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
+    gap: 7px;
+    font: inherit;
+    font-size: 14px;
+    padding: 7px 12px 9px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: none;
+    color: #57606a;
+    cursor: pointer;
   }
-  .tab:hover { background: white; }
-  .tab.active {
-    background: white;
-    border-color: #d0d7de;
-    color: #1f2328;
-    font-weight: 600;
+  .tab:hover { color: #1f2328; }
+  .tab.active { color: #1f2328; font-weight: 600; border-bottom-color: #fd8c73; }
+  .tab-wrap { display: inline-flex; align-items: center; gap: 2px; }
+  .tab-wrap .tab { margin-bottom: 0; }
+  .tab-wrap.active .tab { border-bottom-color: #8250df; }
+  .tab-wrap select {
+    font: inherit;
+    font-size: 12px;
+    color: #57606a;
+    padding: 2px 4px;
+    margin-bottom: 4px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background: #fff;
   }
+  .count { font-size: 12px; font-weight: 500; color: #57606a; }
   .badge {
     background: #0969da;
-    color: white;
-    font-size: 0.68rem;
-    padding: 0.05rem 0.38rem;
+    color: #fff;
+    font-size: 11px;
+    padding: 1px 6px;
     border-radius: 999px;
     font-weight: 700;
-    min-width: 1rem;
-    text-align: center;
   }
-  .meta {
-    margin-left: auto;
-    font-size: 0.76rem;
-    color: #666;
-  }
+  .badge.merged-badge { background: #8250df; }
+  .empty { padding: 40px 16px; text-align: center; color: #57606a; }
   .link {
     background: none;
     border: none;
     padding: 0;
     color: #0969da;
-    text-decoration: underline;
-    cursor: pointer;
     font: inherit;
-    font-size: 0.78rem;
-  }
-  .empty {
-    padding: 2.5rem 1rem;
-    text-align: center;
-    color: #777;
-  }
-  .hidden-details {
-    border-top: 1px solid #eee;
-    background: #fafafa;
-  }
-  .hidden-details summary {
     cursor: pointer;
-    color: #444;
-    padding: 0.5rem 0.85rem;
-    font-size: 0.78rem;
+    text-decoration: underline;
   }
-  .hidden-list {
-    border-top: 1px solid #eee;
-    background: white;
-  }
-  .hidden-item {
-    opacity: 0.7;
-  }
-  .hidden-item:hover { opacity: 1; }
-  .reason-bar {
-    background: #fff5e0;
-    color: #8b5a00;
-    border-bottom: 1px solid #f1d9a6;
-    padding: 0.15rem 0.85rem;
-    font-size: 0.7rem;
-    font-family: ui-monospace, monospace;
-    letter-spacing: 0.02em;
-  }
+  .hidden { border-top: 1px solid #eef0f3; background: #f6f8fa; border-radius: 0 0 8px 8px; }
+  .hidden summary { cursor: pointer; padding: 9px 14px; font-size: 12px; color: #57606a; }
+  .hidden-list { border-top: 1px solid #eef0f3; opacity: 0.75; }
 </style>

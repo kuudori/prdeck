@@ -43,10 +43,10 @@ query {
   }
 }`;
 
-const ORGS_FROM_PRS_QUERY = `
-query OrgsFromPRs($q: String!) {
+const ACTIVITY_QUERY = `
+query Activity($q: String!) {
   search(query: $q, type: ISSUE, first: 100) {
-    nodes { ... on PullRequest { repository { owner { __typename login avatarUrl } } } }
+    nodes { ... on PullRequest { repository { nameWithOwner isPrivate owner { __typename login avatarUrl } } } }
   }
 }`;
 
@@ -55,23 +55,21 @@ query Owner($login: String!) {
   repositoryOwner(login: $login) { __typename login avatarUrl }
 }`;
 
-const OWNER_REPOS_QUERY = `
-query OwnerRepos($login: String!, $cursor: String) {
-  repositoryOwner(login: $login) {
-    __typename
-    ... on User {
-      repositories(first: 100, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}, ownerAffiliations: [OWNER, COLLABORATOR]) {
-        pageInfo { hasNextPage endCursor }
-        nodes { nameWithOwner isPrivate isArchived }
-      }
-    }
-    ... on Organization {
-      repositories(first: 100, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
-        pageInfo { hasNextPage endCursor }
-        nodes { nameWithOwner isPrivate isArchived }
-      }
-    }
+const REPO_QUERY = `
+query Repo($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) { nameWithOwner isPrivate isArchived }
+}`;
+
+const REPO_SEARCH_QUERY = `
+query RepoSearch($q: String!) {
+  search(query: $q, type: REPOSITORY, first: 10) {
+    nodes { ... on Repository { nameWithOwner isPrivate } }
   }
+}`;
+
+const COUNT_QUERY = `
+query Count($q: String!) {
+  search(query: $q, type: ISSUE, first: 0) { issueCount }
 }`;
 
 const BASE_OPEN = 'is:pr is:open archived:false';
@@ -251,40 +249,50 @@ export async function fetchViewerAndOrgs(token) {
   const { data, headers } = await runQuery(VIEWER_ORGS_QUERY, {}, token);
   const tokenInfo = describeToken(token, headers.get('x-oauth-scopes'), headers.get('x-github-sso'));
   const v = data?.viewer;
-  if (!v) return { user: null, orgs: [], tokenInfo };
+  if (!v) return { user: null, orgs: [], repos: [], tokenInfo };
   const orgs = (v.organizations?.nodes || []).map((o) => ({
     login: o.login,
     name: o.name || o.login,
     avatarUrl: o.avatarUrl,
     kind: 'org',
   }));
-  for (const o of await orgsFromPRs(v.login, token)) {
+  const activity = await activityFromPRs(v.login, token);
+  for (const o of activity.orgs) {
     if (!orgs.some((x) => x.login.toLowerCase() === o.login.toLowerCase())) orgs.push(o);
   }
   return {
     tokenInfo,
     user: { login: v.login, avatarUrl: v.avatarUrl, kind: 'user' },
     orgs,
+    repos: activity.repos,
   };
 }
 
-// Orgs owning the repos of your 100 most recently updated PRs, busiest first.
-// Covers what the membership list can't: fine-grained tokens (no org list
-// at all), hidden memberships, and orgs you contribute to without being a
-// member. Best effort: a failure just means no suggestions.
-async function orgsFromPRs(login, token) {
+// Repos and orgs behind your 100 most recently updated PRs, busiest first.
+// Feeds the repo suggestions, and the org list where the membership list
+// can't help: fine-grained tokens (no org list at all), hidden memberships,
+// orgs you contribute to without being a member. Best effort.
+async function activityFromPRs(login, token) {
   try {
-    const { data } = await runQuery(ORGS_FROM_PRS_QUERY, { q: `is:pr involves:${login} sort:updated-desc` }, token);
-    const counts = new Map();
+    const { data } = await runQuery(ACTIVITY_QUERY, { q: `is:pr involves:${login} sort:updated-desc` }, token);
+    const orgs = new Map();
+    const repos = new Map();
     for (const n of data?.search?.nodes || []) {
-      const o = n?.repository?.owner;
+      const r = n?.repository;
+      if (!r) continue;
+      const repo = repos.get(r.nameWithOwner) || { nameWithOwner: r.nameWithOwner, isPrivate: !!r.isPrivate, prs: 0 };
+      repo.prs++;
+      repos.set(r.nameWithOwner, repo);
+      const o = r.owner;
       if (o?.__typename !== 'Organization') continue;
-      const prev = counts.get(o.login);
-      counts.set(o.login, { login: o.login, name: o.login, avatarUrl: o.avatarUrl, kind: 'org', suggested: true, prs: (prev?.prs || 0) + 1 });
+      const org = orgs.get(o.login) || { login: o.login, name: o.login, avatarUrl: o.avatarUrl, kind: 'org', suggested: true, prs: 0 };
+      org.prs++;
+      orgs.set(o.login, org);
     }
-    return [...counts.values()].sort((a, b) => b.prs - a.prs);
+    const byPrs = (a, b) => b.prs - a.prs;
+    return { orgs: [...orgs.values()].sort(byPrs), repos: [...repos.values()].sort(byPrs) };
   } catch {
-    return [];
+    return { orgs: [], repos: [] };
   }
 }
 
@@ -298,20 +306,31 @@ export async function fetchOwner(login, token) {
   return { login: o.login, avatarUrl: o.avatarUrl, kind: o.__typename === 'Organization' ? 'org' : 'user' };
 }
 
-export async function fetchOwnerRepos(login, token, { maxPages = 3 } = {}) {
-  const all = [];
-  let cursor = null;
-  for (let i = 0; i < maxPages; i++) {
-    const { data } = await runQuery(OWNER_REPOS_QUERY, { login, cursor }, token);
-    const conn = data?.repositoryOwner?.repositories;
-    if (!conn) break;
-    for (const n of conn.nodes || []) {
-      if (n && !n.isArchived) all.push(n);
-    }
-    if (!conn.pageInfo?.hasNextPage) break;
-    cursor = conn.pageInfo.endCursor;
-  }
-  return all;
+// Check that owner/name exists and is visible to the token.
+export async function fetchRepo(nameWithOwner, token) {
+  const [owner, name] = nameWithOwner.split('/');
+  if (!owner || !name) return null;
+  const { data } = await runQuery(REPO_QUERY, { owner, name }, token);
+  const r = data?.repository;
+  return r && !r.isArchived ? { nameWithOwner: r.nameWithOwner, isPrivate: !!r.isPrivate } : null;
+}
+
+// Repos whose name contains `text`, limited to the given owners (you and
+// your orgs) so a short word doesn't return the whole of GitHub.
+export async function searchRepos(text, owners, token) {
+  const words = text.trim().split(/\s+/).filter(Boolean).join(' ');
+  if (!words) return [];
+  const scope = owners.slice(0, 10).map((o) => `user:${o}`).join(' ');
+  const { data } = await runQuery(REPO_SEARCH_QUERY, { q: `${words} in:name archived:false ${scope}`.slice(0, 256) }, token);
+  return (data?.search?.nodes || []).filter((n) => n?.nameWithOwner);
+}
+
+// Open PRs a whole org/user scope would pull in, so the Scope panel can warn
+// before it gets slow or hits the 1,000-result search cap.
+export async function countOpenPRs(owner, kind, token) {
+  const qualifier = kind === 'org' ? 'org' : 'user';
+  const { data } = await runQuery(COUNT_QUERY, { q: `is:pr is:open archived:false ${qualifier}:${owner}` }, token);
+  return data?.search?.issueCount ?? null;
 }
 
 async function paginate(q, token, onPartial, ci) {

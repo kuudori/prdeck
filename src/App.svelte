@@ -1,7 +1,9 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import Sidebar from './components/Sidebar.svelte';
-  import Filters from './components/Filters.svelte';
+  import Header from './components/Header.svelte';
+  import FirstRun from './components/FirstRun.svelte';
+  import ScopePanel from './components/ScopePanel.svelte';
+  import SettingsPanel from './components/SettingsPanel.svelte';
   import PRList from './components/PRList.svelte';
   import ErrorBanner from './components/ErrorBanner.svelte';
 
@@ -33,7 +35,12 @@
     cappedStore,
     errorStore,
     watchedStore,
+    filtersStore,
+    setQuery,
+    panelStore,
+    BACKGROUND_PAUSE_MS,
   } from './lib/stores.js';
+  import { ensureAccount } from './lib/account.js';
   import { hasToken as tokenPresent, hasScope as scopePresent } from './lib/status.js';
 
   // A full sync refetches every PR in scope; the ones in between only fetch
@@ -72,9 +79,66 @@
   let rerunQueued = false;
   // { lastSyncAt, lastFullSyncAt, scopeKey, capped }, mirrored in IDB meta.
   let sync = {};
+  // The timer skipped a refresh because the tab has been away too long.
+  let paused = false;
+  let online = typeof navigator === 'undefined' ? true : navigator.onLine;
+  // Ticks so "Updated 3 min ago" stays true without a refresh.
+  let now = Date.now();
+  let nowTimer;
+  // Settings opened from "Token rejected" starts on the token form.
+  let settingsForToken = false;
 
   $: hasToken = tokenPresent($tokenStore);
   $: hasScope = scopePresent($settingsStore);
+  $: setupDone = hasToken && !!$settingsStore.setupDone;
+
+  $: scopeSummary = (() => {
+    const s = $settingsStore;
+    const parts = [];
+    if (s.includeInvolves) parts.push('you');
+    const repos = (s.watchRepos || []).length;
+    if (repos) parts.push(`${repos} repo${repos === 1 ? '' : 's'}`);
+    const owners = (s.watchOrgs || []).length + (s.watchUsers || []).length;
+    if (owners) parts.push(`${owners} org${owners === 1 ? '' : 's'}`);
+    return parts.join(' · ') || 'nothing yet';
+  })();
+
+  $: watchedCount = Object.keys($watchedStore).length;
+  $: watchingActive = /(^|\s)is:watched(\s|$)/.test($filtersStore.text || '');
+
+  // What the header says about the list: is it current, and if not, why.
+  $: status = (() => {
+    const errs = $errorStore;
+    const find = (k) => errs.find((e) => e.kind === k);
+    if (find('auth')) return { tone: 'danger', text: 'Token rejected · Replace', action: 'token' };
+    if ($refreshingStore) return { tone: 'busy', text: 'Syncing…' };
+    const rl = find('rateLimit');
+    if (rl) return { tone: 'warn', text: rl.resetAt ? `Rate limited until ${clock(rl.resetAt)}` : 'Rate limited' };
+    if (find('abuse')) return { tone: 'warn', text: 'GitHub asked to slow down' };
+    if (!online || find('network')) {
+      return { tone: 'muted', text: $lastRefreshAtStore ? `Offline: showing PRs from ${clock($lastRefreshAtStore)}` : 'Offline' };
+    }
+    if (paused && hiddenSince) return { tone: 'muted', text: `Paused: tab hidden ${since(hiddenSince, now)}` };
+    if (!$lastRefreshAtStore) return { tone: 'muted', text: 'Not synced yet' };
+    return { tone: 'ok', text: `Updated ${ago($lastRefreshAtStore, now)}` };
+  })();
+
+  function clock(ms) {
+    return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  function since(ms, at) {
+    const m = Math.max(0, Math.round((at - ms) / 60000));
+    if (m < 60) return `${m} min`;
+    return `${Math.round(m / 60)} h`;
+  }
+  function ago(ms, at) {
+    const m = Math.round((at - ms) / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return `${m} min ago`;
+    const h = Math.round(m / 60);
+    if (h < 24) return `${h} h ago`;
+    return `${Math.round(h / 24)} d ago`;
+  }
   $: if (bootDone && $settingsStore.intervalMinutes) scheduleTick();
 
   function userError(e) {
@@ -141,6 +205,7 @@
     const token = ($tokenStore || '').trim();
     const settings = $settingsStore;
     if (!tokenPresent(token)) return;
+    if (!settings.setupDone) return;
     if (!scopePresent(settings)) return;
     errorStore.clearKind('noPat');
     errorStore.clearKind('emptyScope');
@@ -170,7 +235,10 @@
       const { prs } = result;
       const capped = full ? result.capped : sync.capped || [];
 
-      const newlyObserved = await markObservedBulk(prs);
+      // One timestamp for both IDB and memory, and not later than the
+      // first-run cutoff below, so a first sync really comes up all SEEN.
+      const observedAt = Date.now();
+      const newlyObserved = await markObservedBulk(prs, observedAt);
 
       let dismissed = $lastDismissedAtStore;
       const firstRun = !(await getMeta('lastDismissedAt'));
@@ -196,13 +264,13 @@
       if (newlyObserved.length > 0) {
         observedStore.update((m) => {
           const next = new Map(m);
-          const now = Date.now();
-          for (const id of newlyObserved) next.set(id, { firstSeenAt: now });
+          for (const id of newlyObserved) next.set(id, { firstSeenAt: observedAt });
           return next;
         });
       }
       cappedStore.set(capped);
       lastRefreshAtStore.set(startedAt);
+      paused = false;
 
       errorStore.clearKind('auth');
       errorStore.clearKind('rateLimit');
@@ -221,9 +289,11 @@
 
   // "Away" is approximated as how long this tab has been in the background;
   // a page can't see activity in other tabs or apps.
+  // "Away" is approximated as how long this tab has been in the background;
+  // a page can't see activity in other tabs or apps.
   function isAway() {
-    const hours = Number($settingsStore.pauseAfterHours) || 0;
-    return hours > 0 && hiddenSince !== null && Date.now() - hiddenSince > hours * 3600_000;
+    const limit = BACKGROUND_PAUSE_MS[$settingsStore.backgroundRefresh] ?? BACKGROUND_PAUSE_MS['2h'];
+    return limit !== null && hiddenSince !== null && Date.now() - hiddenSince >= limit;
   }
 
   function scheduleTick() {
@@ -231,7 +301,10 @@
     const ms = Math.max(1, $settingsStore.intervalMinutes) * 60 * 1000;
     timer = setTimeout(async () => {
       // Paused while away; onVisibilityChange restarts the timer.
-      if (isAway()) return;
+      if (isAway()) {
+        paused = true;
+        return;
+      }
       await refresh('interval');
       scheduleTick();
     }, ms);
@@ -243,6 +316,7 @@
       return;
     }
     hiddenSince = null;
+    paused = false;
     setUnseenBells(0);
     checkVersion();
     if (Date.now() - $lastRefreshAtStore > FRESH_MS) refresh('visibility');
@@ -357,7 +431,32 @@
     }, VERSION_CHECK_MS);
   }
 
+  function toggleWatching() {
+    const text = ($filtersStore.text || '').trim();
+    if (watchingActive) setQuery(text.replace(/(^|\s)is:watched(?=\s|$)/g, ' ').replace(/\s+/g, ' ').trim());
+    else setQuery(text ? `${text} is:watched` : 'is:watched');
+  }
+
+  function openSettings(forToken = false) {
+    settingsForToken = forToken;
+    panelStore.set('settings');
+  }
+
+  function onTokenChange() {
+    errorStore.clearKind('auth');
+    refresh('token');
+  }
+
+  function onSetupDone() {
+    refresh('initial');
+  }
+
+  function onOffline() {
+    online = false;
+  }
+
   function onOnline() {
+    online = true;
     errorStore.clearKind('network');
     refresh('online');
   }
@@ -396,6 +495,8 @@
 
   onMount(async () => {
     baseTitle = document.title;
+    nowTimer = setInterval(() => (now = Date.now()), 30_000);
+    if (tokenPresent($tokenStore)) ensureAccount($tokenStore).catch(() => {});
     if (document.hidden) hiddenSince = Date.now();
     await hydrateFromCache();
     bootDone = true;
@@ -405,129 +506,72 @@
     scheduleVersionCheck();
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
   });
 
   onDestroy(() => {
     clearTimeout(timer);
     clearTimeout(watchTimer);
     clearTimeout(versionTimer);
+    clearInterval(nowTimer);
     document.removeEventListener('visibilitychange', onVisibilityChange);
     window.removeEventListener('online', onOnline);
+    window.removeEventListener('offline', onOffline);
   });
 </script>
 
-<div class="layout">
-  <Sidebar {onScopeChange} />
+{#if !setupDone}
+  <FirstRun onDone={onSetupDone} />
+{:else}
+  <Header
+    {scopeSummary}
+    {status}
+    {updateAvailable}
+    {watchedCount}
+    {watchingActive}
+    refreshing={$refreshingStore}
+    canRefresh={hasScope}
+    onToggleWatching={toggleWatching}
+    onRefresh={() => refresh('manual')}
+    onFullResync={() => refresh('manual', { forceFull: true })}
+    onOpenScope={() => panelStore.set('scope')}
+    onOpenSettings={() => openSettings(false)}
+    onStatusAction={(a) => { if (a === 'token') openSettings(true); }} />
 
   <main>
-    <header>
-      <div class="header-actions">
-        {#if updateAvailable}
-          <button type="button" class="update" on:click={() => location.reload()} title="A newer version is deployed">
-            New version · reload
-          </button>
-        {/if}
-        <button
-          type="button"
-          title="Shift-click for a full resync"
-          on:click={(e) => refresh('manual', { forceFull: e.shiftKey })}
-          disabled={$refreshingStore || !hasToken || !hasScope}>
-          {#if $refreshingStore}<span class="rainbow">updating…</span>{:else}↻ Refresh{/if}
-        </button>
-      </div>
-      {#if $lastRefreshAtStore}
-        <small class="muted">last: {new Date($lastRefreshAtStore).toLocaleTimeString()}</small>
-      {/if}
-    </header>
-
     <ErrorBanner />
-
-    {#if hasScope}
-      <Filters />
-    {/if}
-
-    <PRList onMarkViewed={markViewed} onMarkUnseen={markUnseen} onToggleWatch={toggleWatch} />
+    <PRList onMarkViewed={markViewed} onMarkUnseen={markUnseen} onToggleWatch={toggleWatch} {onScopeChange} />
   </main>
-</div>
+
+  {#if $panelStore === 'scope'}
+    <ScopePanel onClose={() => panelStore.set(null)} onChange={onScopeChange} />
+  {:else if $panelStore === 'settings'}
+    <SettingsPanel
+      replacingToken={settingsForToken}
+      onClose={() => panelStore.set(null)}
+      {onScopeChange}
+      {onTokenChange} />
+  {/if}
+{/if}
 
 <style>
   :global(body) {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 14px;
     background: #f6f8fa;
-    color: #222;
-  }
-  .layout {
-    display: grid;
-    grid-template-columns: 280px minmax(0, 1fr);
-    min-height: 100vh;
-    align-items: stretch;
+    color: #1f2328;
   }
   main {
-    padding: 1rem;
+    padding: 16px 20px;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 12px;
     min-width: 0;
-  }
-  header {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    flex-wrap: wrap;
-  }
-  .header-actions {
-    display: flex;
-    gap: 0.4rem;
-    margin-left: auto;
-  }
-  .header-actions button {
-    padding: 0.35rem 0.7rem;
-    border: 1px solid #ccc;
-    background: white;
-    border-radius: 4px;
-    cursor: pointer;
-    font: inherit;
-    font-size: 0.85rem;
-  }
-  .header-actions button.update {
-    border-color: #1a7f37;
-    color: #1a7f37;
-  }
-  .header-actions button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .muted {
-    color: #666;
-    font-size: 0.72rem;
-  }
-  :global(.rainbow) {
-    background-image: linear-gradient(
-      90deg,
-      #ff0040,
-      #ff8000,
-      #ffd000,
-      #00c040,
-      #00b0ff,
-      #8040ff,
-      #ff0040
-    );
-    background-size: 200% 100%;
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-    -webkit-text-fill-color: transparent;
-    font-weight: 700;
-    animation: rainbow-flow 1.6s linear infinite;
-  }
-  @keyframes -global-rainbow-flow {
-    from { background-position: 0% 0; }
-    to   { background-position: -200% 0; }
+    max-width: 1400px;
+    margin: 0 auto;
   }
   @media (max-width: 720px) {
-    .layout {
-      grid-template-columns: 1fr;
-    }
+    main { padding: 12px 8px; }
   }
 </style>

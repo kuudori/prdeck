@@ -12,10 +12,12 @@
     REVIEW_REQUIRED: 'review required',
   };
 
-  const STATUS_TAG = {
-    [STATUS.NEW]: { cls: 'new', text: 'NEW' },
-    [STATUS.UPDATED]: { cls: 'updated', text: 'UPDATED' },
-    [STATUS.SEEN]: { cls: 'seen', text: 'seen' },
+  const CI_LABEL = {
+    SUCCESS: '✓ checks passed',
+    FAILURE: '✗ checks failed',
+    ERROR: '✗ checks failed',
+    PENDING: '● checks running',
+    EXPECTED: '● checks running',
   };
 
   function ago(iso) {
@@ -46,26 +48,16 @@
   }
 
   $: isMerged = pr.state === STATE.MERGED;
-  $: prIconColor = isMerged ? '#8250df' : (pr.isDraft ? '#656d76' : '#1a7f37');
-  $: needsAttention = pr.reviewDecision === 'CHANGES_REQUESTED' || pr.reviewDecision === 'REVIEW_REQUIRED';
-  $: ciGlyph =
-    pr.ciState === 'SUCCESS' ? '✓ checks' :
-    (pr.ciState === 'FAILURE' || pr.ciState === 'ERROR') ? '✗ checks' :
-    (pr.ciState === 'PENDING' || pr.ciState === 'EXPECTED') ? '● checks' : '';
-  $: statusTag = STATUS_TAG[pr.status];
   $: isUnseen = pr.status === STATUS.NEW || pr.status === STATUS.UPDATED;
+  $: iconColor = isMerged ? '#8250df' : pr.isDraft ? '#57606a' : '#1a7f37';
 </script>
 
-<article class="row status-{pr.status}" class:merged={isMerged}>
-  <div class="icon" title={isMerged ? 'Merged PR' : (pr.isDraft ? 'Draft PR' : 'Open PR')}>
+<article class="row status-{pr.status}" class:merged={isMerged} class:watched={pr.watched}>
+  <div class="icon" title={isMerged ? 'Merged PR' : pr.isDraft ? 'Draft PR' : 'Open PR'} style="color: {iconColor}">
     {#if isMerged}
-      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-        <path fill={prIconColor} d="M5 3.254V3.25v.018A.25.25 0 0 1 5 3.254Zm.045-.041a2.25 2.25 0 1 1 1.5 0v1.737c.842-.495 1.7-.747 2.553-.756 1.677-.026 3.135.886 4.066 1.948.31.355.622.74.886 1.115V5.372a2.25 2.25 0 1 1 1.5 0v5.256a2.251 2.251 0 1 1-1.5 0V8.825a8.62 8.62 0 0 0-1.952-2.218c-.715-.516-1.578-.875-2.5-.86-.7.007-1.5.27-2.553.825v3.056a2.251 2.251 0 1 1-1.5 0V5.372ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"/>
-      </svg>
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M6 8.5v7"/><path d="M6 8.5c0 2 2 3.5 4.5 3.5h5"/></svg>
     {:else}
-      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-        <path fill={prIconColor} d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"/>
-      </svg>
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5v7"/><path d="M18 15.5V9a3 3 0 0 0-3-3h-4"/><path d="m13 4-2 2 2 2"/></svg>
     {/if}
   </div>
 
@@ -73,188 +65,158 @@
     <div class="title-row">
       <a class="title" href={pr.url} target="_blank" rel="noopener noreferrer"
          on:click={() => { if (isUnseen) onMarkViewed(pr); }}>{pr.title}</a>
-      {#if needsAttention}
-        <span class="dot" title={REVIEW_LABEL[pr.reviewDecision] || 'needs attention'}></span>
-      {/if}
-      {#if pr.labels?.length}
-        {#each pr.labels as l}
-          <span class="gh-label" style="background:#{l.color || '888'}; color:{readable(l.color)}">{l.name}</span>
-        {/each}
-      {/if}
-      {#if isMerged}<span class="tag merged-tag">merged</span>
-      {:else if pr.isDraft}<span class="tag draft">draft</span>{/if}
-      {#if statusTag}<span class="tag {statusTag.cls}">{statusTag.text}</span>{/if}
+      {#each pr.labels || [] as l}
+        <span class="gh-label" style="background:#{l.color || '888'}; color:{readable(l.color)}">{l.name}</span>
+      {/each}
+      {#if pr.isDraft && !isMerged}<span class="tag draft">draft</span>{/if}
+      {#if pr.status === STATUS.NEW}<span class="tag new">New</span>
+      {:else if pr.status === STATUS.UPDATED}<span class="tag updated">Updated</span>{/if}
     </div>
 
     <div class="meta">
       <span class="repo">{pr.repo}#{pr.number}</span>
-      <span>opened {ago(pr.createdAt)} by @{pr.author}</span>
+      <span>by @{pr.author}</span>
       {#if isMerged && pr.mergedAt}
-        <span class="time">· merged {ago(pr.mergedAt)}</span>
+        <span>· merged {ago(pr.mergedAt)}</span>
       {:else}
-        <span class="time">· updated {ago(pr.updatedAt)}</span>
+        <span>· updated {ago(pr.updatedAt)}</span>
       {/if}
-      {#if pr.additions != null || pr.deletions != null}
-        <span class="diff">
-          <span class="add">+{fmtNum(pr.additions)}</span>
-          <span class="del">-{fmtNum(pr.deletions)}</span>
-        </span>
-      {/if}
-      {#if ciGlyph}
-        <span class="ci ci-{pr.ciState}" title={pr.ciState}>{ciGlyph}</span>
-      {/if}
-      {#if REVIEW_LABEL[pr.reviewDecision]}
-        <span class="review review-{pr.reviewDecision}">{REVIEW_LABEL[pr.reviewDecision]}</span>
-      {/if}
+      <span class="diff"><span class="add">+{fmtNum(pr.additions)}</span> <span class="del">-{fmtNum(pr.deletions)}</span></span>
+      {#if CI_LABEL[pr.ciState]}<span class="ci ci-{pr.ciState}">{CI_LABEL[pr.ciState]}</span>{/if}
+      {#if REVIEW_LABEL[pr.reviewDecision]}<span class="review review-{pr.reviewDecision}">{REVIEW_LABEL[pr.reviewDecision]}</span>{/if}
     </div>
   </div>
 
   <div class="right">
-    {#if pr.commentCount > 0}
-      <span class="comments" title="comments">
-        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="#656d76" d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.189l2.72-2.719a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>
-        {pr.commentCount}
-      </span>
-    {/if}
     <div class="actions">
       {#if !isMerged || pr.watched}
-        <button
-          type="button"
-          class="act bell"
-          class:on={pr.watched}
-          aria-pressed={!!pr.watched}
-          on:click={() => onToggleWatch(pr)}
-          title={pr.watched ? 'Stop notifying' : 'Notify on push, review, merge'}>
-          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M8 16a2 2 0 0 0 1.985-1.75c.017-.137-.097-.25-.235-.25h-3.5c-.138 0-.252.113-.235.25A2 2 0 0 0 8 16ZM3 5a5 5 0 0 1 10 0v2.947c0 .05.015.098.042.139l1.703 2.555A1.519 1.519 0 0 1 13.482 13H2.518a1.516 1.516 0 0 1-1.263-2.36l1.703-2.554A.255.255 0 0 0 3 7.947Zm5-3.5A3.5 3.5 0 0 0 4.5 5v2.947c0 .346-.102.683-.294.97l-1.703 2.556a.017.017 0 0 0-.003.01l.001.006c0 .002.002.004.004.006l.006.004.007.001h10.964l.007-.001.006-.004.004-.006.001-.007a.017.017 0 0 0-.003-.01l-1.703-2.554a1.745 1.745 0 0 1-.294-.97V5A3.5 3.5 0 0 0 8 1.5Z"/></svg>
+        <button type="button" class="act bell" class:on={pr.watched} aria-pressed={!!pr.watched}
+          aria-label={pr.watched ? 'Stop notifying about this PR' : 'Notify me about this PR'}
+          title={pr.watched ? 'Bell on: notifies on push, review, CI, merge' : 'Notify on push, review, CI, merge'}
+          on:click={() => onToggleWatch(pr)}>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill={pr.watched ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" fill="none"/></svg>
         </button>
       {/if}
       {#if isUnseen}
-        <button type="button" class="act primary" on:click={() => onMarkViewed(pr)} title="Mark viewed">✓</button>
-        <button type="button" class="act" on:click={() => onMarkUnseen(pr)} title="Reset to NEW">↺</button>
+        <button type="button" class="act mark seen" on:click={() => onMarkViewed(pr)}>
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          Mark seen
+        </button>
       {:else}
-        <button type="button" class="act" on:click={() => onMarkUnseen(pr)} title="Mark as unseen">↺</button>
+        <button type="button" class="act mark" on:click={() => onMarkUnseen(pr)}>
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+          Mark new
+        </button>
       {/if}
     </div>
+    {#if pr.commentCount > 0}
+      <span class="comments" title="{pr.commentCount} comments">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        {pr.commentCount}
+      </span>
+    {/if}
   </div>
 </article>
 
 <style>
   .row {
     display: grid;
-    grid-template-columns: 1.4rem 1fr auto;
-    gap: 0.6rem;
-    align-items: start;
-    padding: 0.55rem 0.85rem;
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 14px;
     border-bottom: 1px solid #eef0f3;
-    background: white;
+    background: #fff;
   }
-  .row:hover { background: #f6f8fa; }
+  .row:hover, .row:focus-within { background: #f6f8fa; }
   .row.status-NEW { box-shadow: inset 3px 0 0 #0969da; }
   .row.status-UPDATED { box-shadow: inset 3px 0 0 #d97706; }
-  .row.status-SEEN { opacity: 0.7; }
-  .icon {
-    padding-top: 3px;
-  }
+  .row.merged.status-NEW, .row.merged.status-UPDATED { box-shadow: inset 3px 0 0 #8250df; }
+  .icon { align-self: start; padding-top: 3px; }
   .main { min-width: 0; }
-  .title-row {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    flex-wrap: wrap;
-  }
+  .title-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .title {
     color: #1f2328;
     text-decoration: none;
-    font-size: 0.95rem;
+    font-size: 15px;
     font-weight: 600;
     overflow-wrap: anywhere;
   }
+  .status-SEEN .title { color: #424a53; font-weight: 500; }
   .title:hover { color: #0969da; text-decoration: underline; }
-
-  .dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #fb8500;
-    display: inline-block;
-    flex-shrink: 0;
-  }
-
   .tag {
-    font-size: 0.62rem;
+    font-size: 10px;
     font-weight: 700;
-    padding: 1px 5px;
-    border-radius: 3px;
+    padding: 1px 6px;
+    border-radius: 999px;
     letter-spacing: 0.04em;
     text-transform: uppercase;
+    white-space: nowrap;
   }
-  .tag.new { background: #0969da; color: white; }
-  .tag.updated { background: #d97706; color: white; }
-  .tag.seen { background: #eee; color: #777; }
-  .tag.draft { background: #f6f8fa; color: #656d76; border: 1px solid #d0d7de; }
-  .tag.merged-tag { background: #8250df; color: white; }
-  .row.merged.status-NEW { box-shadow: inset 3px 0 0 #8250df; }
-  .row.merged.status-UPDATED { box-shadow: inset 3px 0 0 #8250df; }
-
+  .tag.new { background: #ddf4ff; color: #0550ae; border: 1px solid #54aeff; }
+  .tag.updated { background: #fff1e5; color: #953800; border: 1px solid #fb8f44; }
+  .merged .tag.new, .merged .tag.updated { background: #fbefff; color: #6639ba; border-color: #c297ff; }
+  .tag.draft { background: #f6f8fa; color: #57606a; border: 1px solid #d0d7de; border-radius: 3px; }
   .gh-label {
     padding: 1px 8px;
     border-radius: 999px;
-    font-size: 0.72rem;
+    font-size: 11px;
     font-weight: 500;
-    border: 1px solid rgba(0,0,0,0.08);
+    border: 1px solid rgba(0, 0, 0, 0.08);
     white-space: nowrap;
   }
-
   .meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4rem;
-    font-size: 0.75rem;
-    color: #656d76;
-    margin-top: 0.25rem;
+    gap: 6px;
+    font-size: 12px;
+    color: #57606a;
+    margin-top: 4px;
     align-items: center;
   }
-  .repo {
-    font-family: ui-monospace, monospace;
-    color: #24292f;
-    font-weight: 500;
-  }
-  .time, .diff, .ci, .review { color: #656d76; }
-  .diff { display: inline-flex; gap: 0.25rem; font-family: ui-monospace, monospace; }
-  .diff .add { color: #1a7f37; }
-  .diff .del { color: #cf222e; }
+  .repo { font-family: ui-monospace, monospace; color: #24292f; font-weight: 500; }
+  .diff { font-family: ui-monospace, monospace; }
+  .add { color: #1a7f37; }
+  .del { color: #cf222e; }
   .ci-SUCCESS { color: #1a7f37; }
   .ci-FAILURE, .ci-ERROR { color: #cf222e; }
-  .ci-PENDING, .ci-EXPECTED { color: #bf8700; }
-  .ci-NONE { display: none; }
+  .ci-PENDING, .ci-EXPECTED { color: #9a6700; }
   .review { font-weight: 600; }
   .review-APPROVED { color: #1a7f37; }
   .review-CHANGES_REQUESTED { color: #cf222e; }
-  .review-REVIEW_REQUIRED { color: #bf8700; }
+  .review-REVIEW_REQUIRED { color: #9a6700; }
 
-  .right {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    color: #656d76;
-    font-size: 0.8rem;
-  }
-  .comments {
+  .right { display: flex; align-items: center; gap: 10px; color: #57606a; font-size: 13px; min-height: 28px; }
+  .comments { display: inline-flex; align-items: center; gap: 3px; }
+  .actions { display: flex; gap: 4px; }
+  .act {
     display: inline-flex;
     align-items: center;
-    gap: 0.2rem;
-  }
-  .actions { display: flex; gap: 0.2rem; }
-  .actions button.act {
-    padding: 0.18rem 0.4rem;
-    font-size: 0.85rem;
+    gap: 5px;
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 9px;
     border: 1px solid #d0d7de;
-    background: white;
-    border-radius: 4px;
+    background: #fff;
+    border-radius: 6px;
+    color: #57606a;
     cursor: pointer;
   }
-  .actions button.act:hover { background: #f6f8fa; }
-  .actions button.act.primary { color: #1a7f37; }
-  .actions button.act.bell { color: #8c959f; line-height: 0; }
-  .actions button.act.bell.on { color: #9a6700; background: #fff8c5; border-color: #d4a72c; }
+  .act:hover { background: #f3f4f6; color: #1f2328; }
+  .act.seen { color: #1a7f37; }
+  .act.bell { padding: 5px 7px; }
+  .act.bell.on { border-color: #d4a72c; background: #fff8c5; color: #7d4e00; }
+
+  @media (max-width: 600px) {
+    .row { grid-template-columns: 22px minmax(0, 1fr); }
+    .right { grid-column: 2; }
+  }
+
+  /* Calm by default: actions show on hover or keyboard focus. A bell that is
+     on stays visible so belled PRs are recognisable at a glance. Touch
+     screens have no hover, so they always show. */
+  @media (hover: hover) {
+    .act { visibility: hidden; }
+    .row:hover .act, .row:focus-within .act, .act.bell.on { visibility: visible; }
+  }
 </style>

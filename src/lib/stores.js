@@ -1,5 +1,5 @@
 import { writable, derived } from 'svelte/store';
-import { INITIAL_FILTERS, annotate } from './status.js';
+import { annotate } from './status.js';
 
 function persistedLocal(key, initial) {
   let value = initial;
@@ -43,15 +43,31 @@ const SETTINGS_DEFAULTS = {
   intervalMinutes: 5,
   mergedDays: 7,
   openCreatedDays: 90,
-  pauseAfterHours: 2,
+  // While the tab is hidden: 'always' keeps refreshing, '2h'/'8h' stop after
+  // that long away, 'off' stops as soon as the tab is hidden.
+  backgroundRefresh: '2h',
   trackCI: true,
+  // Set once the first-run screen is finished.
+  setupDone: false,
 };
+
+export const BACKGROUND_PAUSE_MS = { always: null, '2h': 2 * 3600_000, '8h': 8 * 3600_000, off: 0 };
 
 export const settingsStore = (() => {
   const store = persistedLocal('prdeck.settings', { ...SETTINGS_DEFAULTS });
   store.update((s) => {
     const next = { ...SETTINGS_DEFAULTS, ...s };
     if (!Array.isArray(next.watchUsers)) next.watchUsers = [];
+    // Older versions stored the pause as hours, 0 meaning never.
+    if ('pauseAfterHours' in s && !('backgroundRefresh' in s)) {
+      const h = Number(s.pauseAfterHours) || 0;
+      next.backgroundRefresh = h === 0 ? 'always' : h <= 4 ? '2h' : '8h';
+    }
+    // Anyone who already had a token set up before the first-run screen existed.
+    if (!('setupDone' in s)) {
+      try { next.setupDone = !!localStorage.getItem('prdeck.pat'); } catch {}
+    }
+    delete next.pauseAfterHours;
     delete next.excludeRepos;
     delete next.extraClauses;
     return next;
@@ -59,21 +75,16 @@ export const settingsStore = (() => {
   return store;
 })();
 
+// The search box is the only filter. Older versions also kept include/exclude
+// lists here; they had no UI left, so they are dropped rather than applied.
 export const filtersStore = (() => {
-  const store = persistedLocal('prdeck.filters', { ...INITIAL_FILTERS });
-  store.update((f) => {
-    if (!('titleExclude' in f) && !('textMode' in f) && !('textRegex' in f)) return f;
-    const next = { ...f };
-    delete next.titleExclude;
-    delete next.textMode;
-    delete next.textRegex;
-    return next;
-  });
+  const store = persistedLocal('prdeck.filters', { text: '' });
+  store.update((f) => ({ text: typeof f?.text === 'string' ? f.text : '' }));
   return store;
 })();
 
-export function resetFilters() {
-  filtersStore.set({ ...INITIAL_FILTERS });
+export function setQuery(text) {
+  filtersStore.set({ text });
 }
 
 export const sortStore = (() => {
@@ -82,17 +93,14 @@ export const sortStore = (() => {
   return store;
 })();
 
-export const sidebarCollapsedStore = persistedLocal('prdeck.sidebarCollapsed', {
-  token: false,
-  owners: false,
-  repos: false,
-  advanced: true,
-});
-
 export const viewModeStore = persistedLocal('prdeck.viewMode', 'open');
 
-export const ownersCacheStore = persistedLocal('prdeck.ownersCache', null);
-export const reposCacheStore = persistedLocal('prdeck.reposCache', {});
+// What the token sees: { user, orgs, repos, tokenInfo, fetchedAt }. See
+// lib/account.js. Kept under its old key so existing caches still load.
+export const accountStore = persistedLocal('prdeck.ownersCache', null);
+
+// Which header panel is open: 'scope' | 'settings' | null.
+export const panelStore = writable(null);
 
 // PR id -> { repo, number, title, url, snap } for PRs with the bell on.
 // snap is the state last notified about; see lib/watch.js.

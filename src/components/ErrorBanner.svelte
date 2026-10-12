@@ -1,6 +1,9 @@
 <script>
   import { errorStore, cappedStore } from '../lib/stores.js';
 
+  // Shown as the header status instead (see App.svelte).
+  const IN_HEADER = new Set(['auth', 'rateLimit', 'abuse', 'network']);
+
   function fmtTime(ms) {
     if (!ms) return '';
     return new Date(ms).toLocaleTimeString();
@@ -8,7 +11,7 @@
 </script>
 
 <div class="banners">
-  {#each $errorStore as e (e.id)}
+  {#each $errorStore.filter((e) => !IN_HEADER.has(e.kind)) as e (e.id)}
     <div class="banner banner-{e.kind}">
       <span class="msg">{e.message}</span>
       {#if e.kind === 'rateLimit' && e.resetAt}
