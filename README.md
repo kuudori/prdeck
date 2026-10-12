@@ -57,8 +57,10 @@ When you first set up the app the list is calm: every PR already in scope reads 
 The search box at the top of the list uses GitHub-style `field:value` syntax. Type into it to get an autocomplete dropdown. Arrow keys to navigate, Enter or Tab to insert.
 
 ```
-title:bugfix author:alice -is:draft review:approved
+fix flaky repo:~hyperfleet -author:~bot -is:draft review:approved
 ```
+
+Plain words match the PR title (case-insensitive substring), so `fix flaky` keeps PRs whose title contains both words. Quote a phrase to match it as one piece: `"fix flaky"`.
 
 | field      | accepted values                                                  |
 |------------|------------------------------------------------------------------|
@@ -71,7 +73,9 @@ title:bugfix author:alice -is:draft review:approved
 | `ci:`      | `success`, `failure`, `pending`, `error`, `none` (needs **Track CI status**) |
 | `is:`      | `draft`                                                          |
 
-Prefix any token with `-` to negate it (`-author:dependabot`, `-is:draft`). Multiple tokens are AND-ed together. There is no `OR`.
+`author:`, `repo:` and `label:` match the whole value. Put `~` after the colon to match a substring instead: `repo:~hyperfleet`, `label:~"ok-to"`, `-author:~bot`.
+
+Prefix any token with `-` to negate it (`-author:dependabot`, `-is:draft`, `-wip`). Multiple tokens are AND-ed together. There is no `OR`.
 
 PRs hidden by the search show up in a collapsible "N hidden" section under the list, with the reason they were hidden printed above each row.
 

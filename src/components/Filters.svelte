@@ -120,7 +120,7 @@
       <input
         type="text"
         class="search"
-        placeholder='title:foo author:me -is:draft review:approved'
+        placeholder='fix flaky repo:~hyperfleet -is:draft review:approved'
         bind:this={inputEl}
         value={queryText}
         on:input={onInput}
@@ -155,7 +155,6 @@
       {#each queryErrors as e}
         <span class="err-chip">
           {#if e.kind === 'unknown-field'}unknown field: {e.field}
-          {:else if e.kind === 'bare-text'}use a field, e.g. title:{e.value}
           {:else}{e.kind}{/if}
         </span>
       {/each}

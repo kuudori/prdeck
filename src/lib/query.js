@@ -1,10 +1,10 @@
 // Lightweight GitHub-style search query parser & matcher.
 // Grammar (implicit AND between tokens):
 //   token        := ['-'] (field-token | freetext)
-//   field-token  := field ':' value
-//   field        := author | repo | label | status | review | ci | is
+//   field-token  := field ':' ['~'] value      ('~' = contains instead of equals)
+//   field        := title | author | repo | label | status | review | ci | is | created | updated | merged
 //   value        := "quoted text" | bareword
-//   freetext     := bareword | "quoted text"   (matched against PR title)
+//   freetext     := bareword | "quoted text"   (substring of the PR title)
 //
 // Unknown fields are ignored (the token passes). Mirrors how GitHub search
 // degrades gracefully rather than throwing.
@@ -32,6 +32,10 @@ function eq(a, b) {
   return (a || '').toLowerCase() === (b || '').toLowerCase();
 }
 
+function has(a, b) {
+  return (a || '').toLowerCase().includes((b || '').toLowerCase());
+}
+
 function dateMatch(isoDate, spec) {
   if (!isoDate) return false;
   let op = '>=';
@@ -54,7 +58,7 @@ function dateMatch(isoDate, spec) {
 }
 
 const FIELD_MATCHERS = {
-  title: (pr, v) => (pr.title || '').toLowerCase().includes((v || '').toLowerCase()),
+  title: (pr, v) => has(pr.title, v),
   author: (pr, v) => eq(pr.author, v),
   repo: (pr, v) => eq(pr.repo, v),
   label: (pr, v) => (pr.labels || []).some((l) => eq(l.name, v)),
@@ -69,6 +73,14 @@ const FIELD_MATCHERS = {
   created: (pr, v) => dateMatch(pr.createdAt, v),
   updated: (pr, v) => dateMatch(pr.updatedAt, v),
   merged: (pr, v) => dateMatch(pr.mergedAt, v),
+};
+
+// `field:~value` variants. Fields not listed here ignore the '~'.
+const CONTAINS_MATCHERS = {
+  title: FIELD_MATCHERS.title,
+  author: (pr, v) => has(pr.author, v),
+  repo: (pr, v) => has(pr.repo, v),
+  label: (pr, v) => (pr.labels || []).some((l) => has(l.name, v)),
 };
 
 // Tokenize a query string. Returns { tokens, error } where error is
@@ -91,9 +103,11 @@ export function tokenize(query) {
     }
     let field = null;
     let value;
+    let contains = false;
     if (s[i] === ':') {
       field = head;
       i++;
+      if (s[i] === '~') { contains = true; i++; }
       // read value (quoted or bare)
       if (s[i] === '"') {
         const close = s.indexOf('"', i + 1);
@@ -128,17 +142,17 @@ export function tokenize(query) {
     if (field) {
       const fk = field.toLowerCase();
       if (!FIELD_MATCHERS[fk]) errors.push({ kind: 'unknown-field', field });
-    } else if (value) {
-      errors.push({ kind: 'bare-text', value });
     }
-    tokens.push({ neg, field: field ? field.toLowerCase() : null, value, start: tokenStart, end: i });
+    tokens.push({ neg, field: field ? field.toLowerCase() : null, value, contains, start: tokenStart, end: i });
   }
   return { tokens, errors };
 }
 
 function tokenPasses(tok, pr) {
-  if (!tok.field) return true; // bare text — no-op, must use a field
-  const fn = FIELD_MATCHERS[tok.field];
+  if (!tok.field && !tok.value) return true; // a lone '-'
+  const fn = !tok.field
+    ? FIELD_MATCHERS.title
+    : (tok.contains && CONTAINS_MATCHERS[tok.field]) || FIELD_MATCHERS[tok.field];
   if (!fn) return true; // unknown field — ignore
   const hit = !!fn(pr, tok.value);
   return tok.neg ? !hit : hit;
@@ -183,6 +197,11 @@ export function autocompleteContext(text, cursor) {
   }
   const field = core.slice(0, colonIdx).toLowerCase();
   let valuePart = core.slice(colonIdx + 1);
+  let tilde = 0;
+  if (valuePart.startsWith('~')) {
+    tilde = 1;
+    valuePart = valuePart.slice(1);
+  }
   let quoted = false;
   if (valuePart.startsWith('"')) {
     quoted = true;
@@ -192,7 +211,7 @@ export function autocompleteContext(text, cursor) {
     kind: 'value',
     field,
     prefix: valuePart,
-    replaceStart: cursorOffset + colonIdx + 1 + (quoted ? 1 : 0),
+    replaceStart: cursorOffset + colonIdx + 1 + tilde + (quoted ? 1 : 0),
     replaceEnd: pos,
     quoted,
   };
