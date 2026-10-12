@@ -2,18 +2,31 @@
 
 A local dashboard for keeping track of GitHub pull requests across the repos and orgs you care about.
 
-The whole app is a single HTML file. Build it once, drop it somewhere on your disk, bookmark `file:///path/to/index.html`, and that is your install. No server, no backend, no telemetry, no account. The personal access token sits in `localStorage` and the PR cache lives in IndexedDB, both scoped to that file URL in your browser.
+The whole app is a single HTML file that talks to the GitHub API straight from your browser. No backend, no telemetry, no account. Your token sits in `localStorage` and the PR cache in IndexedDB, in your browser only.
 
-## Build the file
+## Use it
+
+Open **https://kuudori.github.io/prdeck/** and bookmark it.
+
+- **Updates.** Every push to `main` deploys a new version to the same address. Reload to get it. A tab that has been open for a while shows a *New version · reload* button when a newer deploy is live.
+- **Your data.** Token, settings, belled PRs and seen history are stored by your browser for that address, so they survive reloads and new versions. They don't follow you to another browser or computer, and clearing site data or using a private window starts you from scratch.
+
+### Run it from a file instead
 
 ```bash
 npm install
 npm run build
 ```
 
-That produces `dist/index.html`. Put it anywhere you like (`~/Tools/pr-review/index.html`, your Dropbox, a USB stick, whatever) and open it in a browser. Bookmark the page. Done.
+That produces `dist/index.html`. Put it anywhere and open it in a browser. When a new version comes out, replace the file in place; data is tied to the file's path, so keep it in the same place. One limitation: Chrome doesn't remember the notification permission for `file://` pages, so the bell asks again after every reload.
 
-When a new version comes out, replace the file in place. The cache and token are tied to the file's URL, so as long as you keep it at the same path, your data carries over.
+## Token safety
+
+The page holds a GitHub token, so:
+
+- Use a **fine-grained, read-only** token with an expiry date. Click *edit* in the Token section to rotate it.
+- The page carries a Content-Security-Policy: it runs only its own script (pinned by hash) and can send requests only to `api.github.com`. Injected code can't run, and the token can't be sent anywhere else.
+- Every GitHub Pages site under the same account shares one origin (`kuudori.github.io`) and so one `localStorage`. Don't host other pages there that you don't trust.
 
 ## Develop
 
@@ -22,6 +35,8 @@ If you want to hack on it:
 ```bash
 npm run dev           # http://localhost:5173
 ```
+
+Pushing to `main` builds and deploys to GitHub Pages (`.github/workflows/pages.yml`).
 
 ## Setup
 
@@ -144,6 +159,6 @@ src/
 
 ## Notes
 
-- The token sits in `localStorage` under `prdeck.pat`. Use a fine-grained token. Click *edit* in the Token section to rotate it.
+- The token sits in `localStorage` under `prdeck.pat`. See [Token safety](#token-safety).
 - Filters are pure client-side. Changing a filter does not refetch.
 - GitHub's search API caps results at 1000 per query. If you hit that cap a banner says so.

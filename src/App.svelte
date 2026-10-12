@@ -44,6 +44,13 @@
   // sync is younger than this.
   const FRESH_MS = 60_000;
 
+  // Hosted copies (GitHub Pages) check for a newer deploy and offer a reload;
+  // a page opened from disk can't, and dev reloads itself.
+  const VERSION_CHECK_MS = 30 * 60_000;
+  const canCheckVersion = !import.meta.env.DEV && location.protocol.startsWith('http');
+  let versionTimer;
+  let updateAvailable = false;
+
   // Belled PRs are polled on their own, faster than the main refresh and
   // even while the away pause holds (being away is what the bell is for).
   const WATCH_POLL_MS = 60_000;
@@ -55,6 +62,9 @@
   // Bell events that fired while the tab was hidden; shown as "(n)" in the
   // tab title until the tab is visible again.
   let unseenBells = 0;
+  // Pages opened from file:// don't keep a notification grant across reloads,
+  // so the prompt would come back on every bell click. Ask once per load.
+  let askedNotifications = false;
   let bootDone = false;
   let hiddenSince = null;
   // Set when a refresh is requested while one is already running (e.g. a
@@ -234,6 +244,7 @@
     }
     hiddenSince = null;
     setUnseenBells(0);
+    checkVersion();
     if (Date.now() - $lastRefreshAtStore > FRESH_MS) refresh('visibility');
     scheduleTick();
   }
@@ -252,7 +263,8 @@
       return next;
     });
     // Ask on the click itself: browsers only show the prompt from a user gesture.
-    if (!on && notificationsSupported() && Notification.permission === 'default') {
+    if (!on && !askedNotifications && notificationsSupported() && Notification.permission === 'default') {
+      askedNotifications = true;
       try { await Notification.requestPermission(); } catch {}
     }
     if (!on) scheduleWatchPoll();
@@ -326,6 +338,25 @@
     }, WATCH_POLL_MS);
   }
 
+  async function checkVersion() {
+    if (!canCheckVersion || updateAvailable) return;
+    try {
+      const res = await fetch('version.json', { cache: 'no-store' });
+      if (!res.ok) return;
+      const { build } = await res.json();
+      if (build && build !== __BUILD_ID__) updateAvailable = true;
+    } catch {}
+  }
+
+  function scheduleVersionCheck() {
+    clearTimeout(versionTimer);
+    if (!canCheckVersion) return;
+    versionTimer = setTimeout(async () => {
+      await checkVersion();
+      scheduleVersionCheck();
+    }, VERSION_CHECK_MS);
+  }
+
   function onOnline() {
     errorStore.clearKind('network');
     refresh('online');
@@ -371,6 +402,7 @@
     if (hasToken && hasScope && Date.now() - $lastRefreshAtStore > FRESH_MS) await refresh('initial');
     scheduleTick();
     scheduleWatchPoll();
+    scheduleVersionCheck();
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('online', onOnline);
   });
@@ -378,6 +410,7 @@
   onDestroy(() => {
     clearTimeout(timer);
     clearTimeout(watchTimer);
+    clearTimeout(versionTimer);
     document.removeEventListener('visibilitychange', onVisibilityChange);
     window.removeEventListener('online', onOnline);
   });
@@ -389,6 +422,11 @@
   <main>
     <header>
       <div class="header-actions">
+        {#if updateAvailable}
+          <button type="button" class="update" on:click={() => location.reload()} title="A newer version is deployed">
+            New version · reload
+          </button>
+        {/if}
         <button
           type="button"
           title="Shift-click for a full resync"
@@ -451,6 +489,10 @@
     cursor: pointer;
     font: inherit;
     font-size: 0.85rem;
+  }
+  .header-actions button.update {
+    border-color: #1a7f37;
+    color: #1a7f37;
   }
   .header-actions button:disabled {
     opacity: 0.5;
