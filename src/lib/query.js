@@ -217,9 +217,9 @@ export function suggestValues(field, prs) {
   return out;
 }
 
-export function suggestFields(prefix) {
+export function suggestFields(prefix, { trackCI = true } = {}) {
   const p = (prefix || '').toLowerCase();
-  return FIELDS.filter((f) => f.startsWith(p));
+  return FIELDS.filter((f) => f.startsWith(p) && (trackCI || f !== 'ci'));
 }
 
 // Helper to insert a suggestion into the text, returning { text, cursor }.

@@ -123,7 +123,7 @@
       {:else if !hasScope}
         It's empty, please configure in the sidebar.
       {:else if $viewModeStore === 'merged'}
-        Nothing merged in the last 7 days.
+        Nothing merged in the last {$settingsStore.mergedDays} days.
       {:else}
         No open PRs match your scope yet. Try refreshing.
       {/if}

@@ -35,19 +35,22 @@ export const tokenStore = (() => {
   return s;
 })();
 
+const SETTINGS_DEFAULTS = {
+  includeInvolves: true,
+  watchRepos: [],
+  watchOrgs: [],
+  watchUsers: [],
+  intervalMinutes: 5,
+  mergedDays: 7,
+  openCreatedDays: 90,
+  pauseAfterHours: 2,
+  trackCI: true,
+};
+
 export const settingsStore = (() => {
-  const store = persistedLocal('prdeck.settings', {
-    includeInvolves: true,
-    watchRepos: [],
-    watchOrgs: [],
-    watchUsers: [],
-    intervalMinutes: 5,
-  });
+  const store = persistedLocal('prdeck.settings', { ...SETTINGS_DEFAULTS });
   store.update((s) => {
-    if (Array.isArray(s.watchUsers) && !('excludeRepos' in s) && !('extraClauses' in s)) {
-      return s;
-    }
-    const next = { ...s };
+    const next = { ...SETTINGS_DEFAULTS, ...s };
     if (!Array.isArray(next.watchUsers)) next.watchUsers = [];
     delete next.excludeRepos;
     delete next.extraClauses;

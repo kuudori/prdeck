@@ -1,6 +1,6 @@
 <script>
   import { tick, onDestroy } from 'svelte';
-  import { filtersStore, sortStore, annotatedPRsStore, resetFilters } from '../lib/stores.js';
+  import { filtersStore, sortStore, annotatedPRsStore, resetFilters, settingsStore } from '../lib/stores.js';
   import {
     autocompleteContext,
     suggestFields,
@@ -42,7 +42,7 @@
   $: ctx = openSuggestions ? autocompleteContext(queryText, cursorPos) : null;
   $: suggestions = (() => {
     if (!openSuggestions || !ctx) return [];
-    if (ctx.kind === 'field') return suggestFields(ctx.prefix);
+    if (ctx.kind === 'field') return suggestFields(ctx.prefix, { trackCI: $settingsStore.trackCI !== false });
     const all = suggestValues(ctx.field, $annotatedPRsStore);
     const p = ctx.prefix.toLowerCase();
     return all.filter((v) => v.toLowerCase().includes(p)).slice(0, 30);

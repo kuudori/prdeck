@@ -1,26 +1,34 @@
 const ENDPOINT = 'https://api.github.com/graphql';
 
+const PR_FIELDS = `
+fragment PRFields on PullRequest {
+  id number title url updatedAt createdAt mergedAt isDraft state reviewDecision
+  additions deletions
+  author { login avatarUrl }
+  repository { nameWithOwner }
+  labels(first: 10) { nodes { name color } }
+  comments { totalCount }
+  reviews  { totalCount }
+  commits(last: 1) {
+    nodes { commit { oid statusCheckRollup @include(if: $withCI) { state } } }
+  }
+}`;
+
 const PR_QUERY = `
-query PRs($q: String!, $cursor: String) {
+query PRs($q: String!, $cursor: String, $withCI: Boolean!) {
   search(query: $q, type: ISSUE, first: 50, after: $cursor) {
     issueCount
     pageInfo { hasNextPage endCursor }
-    nodes {
-      ... on PullRequest {
-        id number title url updatedAt createdAt mergedAt isDraft state reviewDecision
-        additions deletions
-        author { login avatarUrl }
-        repository { nameWithOwner }
-        labels(first: 10) { nodes { name color } }
-        comments { totalCount }
-        reviews  { totalCount }
-        commits(last: 1) {
-          nodes { commit { oid statusCheckRollup { state } } }
-        }
-      }
-    }
+    nodes { ...PRFields }
   }
-}`;
+}
+${PR_FIELDS}`;
+
+const PR_BY_ID_QUERY = `
+query PRsById($ids: [ID!]!, $withCI: Boolean!) {
+  nodes(ids: $ids) { ...PRFields }
+}
+${PR_FIELDS}`;
 
 const VIEWER_QUERY = `query { viewer { login } }`;
 
@@ -56,6 +64,29 @@ query OwnerRepos($login: String!, $cursor: String) {
 
 const BASE_OPEN = 'is:pr is:open archived:false';
 const BASE_MERGED = 'is:pr is:merged archived:false';
+const BASE_ANY = 'is:pr archived:false';
+
+// Search requests in flight at once. GitHub's secondary rate limit punishes
+// bursts, and this keeps a scope with many orgs from firing them all at once.
+const CONCURRENCY = 6;
+// Incremental syncs look back this far past the previous sync to cover
+// search-index lag and small clock skew.
+const DELTA_OVERLAP_MS = 5 * 60_000;
+// CI states that can still change without bumping the PR's updatedAt.
+const HOT_CI = new Set(['PENDING', 'EXPECTED']);
+
+// CI status is the most expensive field to fetch and the only reason for the
+// by-id refetch, so users who don't care about it can turn it off.
+function withCI(cfg) {
+  return cfg.trackCI !== false;
+}
+
+export function syncWindows(cfg) {
+  return {
+    mergedDays: Math.max(1, Number(cfg.mergedDays) || 7),
+    openCreatedDays: Math.max(0, Number(cfg.openCreatedDays ?? 90) || 0),
+  };
+}
 
 function scopeAxes(cfg, userLogin) {
   const axes = [];
@@ -66,20 +97,61 @@ function scopeAxes(cfg, userLogin) {
   return axes;
 }
 
-function buildQueries(cfg, userLogin) {
-  const axes = scopeAxes(cfg, userLogin);
-  const since = isoDaysAgo(90);
-  return axes.map((axis) => `${BASE_OPEN} ${axis} created:>=${since}`);
+// Anything that changes which PRs belong in the cache. When this differs
+// from the last sync, the next sync has to be a full one.
+export function scopeKey(cfg, userLogin) {
+  return JSON.stringify({ axes: scopeAxes(cfg, userLogin), ...syncWindows(cfg), ci: withCI(cfg) });
 }
 
-function buildMergedQueries(cfg, userLogin, sinceDate) {
-  const axes = scopeAxes(cfg, userLogin);
-  const since = sinceDate || isoDaysAgo(7);
-  return axes.map((axis) => `${BASE_MERGED} ${axis} merged:>=${since}`);
+function buildQueries(cfg, userLogin) {
+  const { openCreatedDays } = syncWindows(cfg);
+  const created = openCreatedDays > 0 ? ` created:>=${isoDaysAgo(openCreatedDays)}` : '';
+  return scopeAxes(cfg, userLogin).map((axis) => `${BASE_OPEN} ${axis}${created}`);
+}
+
+function buildMergedQueries(cfg, userLogin) {
+  const since = isoDaysAgo(syncWindows(cfg).mergedDays);
+  return scopeAxes(cfg, userLogin).map((axis) => `${BASE_MERGED} ${axis} merged:>=${since}`);
+}
+
+// No state qualifier: a PR that merged or closed since the last sync has to
+// come back too, so it can move tabs or drop out.
+function buildDeltaQueries(cfg, userLogin, sinceIso) {
+  return scopeAxes(cfg, userLogin).map((axis) => `${BASE_ANY} ${axis} updated:>=${sinceIso}`);
 }
 
 function isoDaysAgo(n) {
   return new Date(Date.now() - n * 86400_000).toISOString().slice(0, 10);
+}
+
+function isoDateTime(ms) {
+  return new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+// Same rules the full-sync queries apply on the server, so a cache built by
+// incremental syncs holds the same PRs a full sync would return.
+function inWindow(pr, cfg) {
+  const { mergedDays, openCreatedDays } = syncWindows(cfg);
+  if (pr.state === 'OPEN') {
+    return openCreatedDays === 0 || (pr.createdAt || '').slice(0, 10) >= isoDaysAgo(openCreatedDays);
+  }
+  if (pr.state === 'MERGED') {
+    return (pr.mergedAt || '').slice(0, 10) >= isoDaysAgo(mergedDays);
+  }
+  return false;
+}
+
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }
 
 function appError(kind, message, extra = {}) {
@@ -89,20 +161,33 @@ function appError(kind, message, extra = {}) {
   return e;
 }
 
-export async function runQuery(query, variables, token) {
-  let res;
-  try {
-    res = await fetch(ENDPOINT, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ query, variables }),
-    });
-  } catch (e) {
-    throw appError('network', e.message || 'network failure');
+// GitHub cuts GraphQL requests off at ~10s and answers 502; heavy search
+// pages hit that now and then and usually succeed on a second try.
+const RETRY_STATUSES = new Set([502, 503, 504]);
+const RETRY_DELAYS_MS = [1000, 3000];
+
+async function post(query, variables, token) {
+  for (let attempt = 0; ; attempt++) {
+    let res;
+    try {
+      res = await fetch(ENDPOINT, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ query, variables }),
+      });
+    } catch (e) {
+      throw appError('network', e.message || 'network failure');
+    }
+    if (!RETRY_STATUSES.has(res.status) || attempt >= RETRY_DELAYS_MS.length) return res;
+    await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
   }
+}
+
+export async function runQuery(query, variables, token) {
+  const res = await post(query, variables, token);
   if (res.status === 401) throw appError('auth', 'GitHub rejected the token');
   if (res.status === 403) {
     const remaining = res.headers.get('x-ratelimit-remaining');
@@ -163,12 +248,12 @@ export async function fetchOwnerRepos(login, token, { maxPages = 3 } = {}) {
   return all;
 }
 
-async function paginate(q, token, onPartial) {
+async function paginate(q, token, onPartial, ci) {
   const nodes = [];
   let cursor = null;
   let issueCount = 0;
   for (let page = 0; page < 20; page++) {
-    const { data, errors } = await runQuery(PR_QUERY, { q, cursor }, token);
+    const { data, errors } = await runQuery(PR_QUERY, { q, cursor, withCI: ci }, token);
     if (errors.length && onPartial) onPartial({ query: q, errors });
     issueCount = data.search.issueCount;
     for (const n of data.search.nodes) {
@@ -211,14 +296,24 @@ function normalizePR(node) {
   };
 }
 
-export async function fanoutFetch(cfg, userLogin, token, onPartial) {
+async function fetchByIds(ids, token, ci) {
+  const chunks = [];
+  for (let i = 0; i < ids.length; i += 100) chunks.push(ids.slice(i, i + 100));
+  // Deleted or no-longer-visible PRs come back as null with a NOT_FOUND
+  // error; skip them and let the next full sync drop them.
+  const results = await mapLimit(chunks, CONCURRENCY, (chunk) => runQuery(PR_BY_ID_QUERY, { ids: chunk, withCI: ci }, token));
+  return results.flatMap(({ data }) => (data?.nodes || []).filter((n) => n && n.id));
+}
+
+// Full sync: every PR in scope, from scratch.
+export async function fullFetch(cfg, userLogin, token, onPartial) {
   const openQs = buildQueries(cfg, userLogin);
   const mergedQs = buildMergedQueries(cfg, userLogin);
   if (openQs.length === 0 && mergedQs.length === 0) {
     return { prs: [], capped: [], empty: true };
   }
   const allQueries = [...openQs, ...mergedQs];
-  const results = await Promise.all(allQueries.map((q) => paginate(q, token, onPartial)));
+  const results = await mapLimit(allQueries, CONCURRENCY, (q) => paginate(q, token, onPartial, withCI(cfg)));
   const byId = new Map();
   const capped = [];
   for (const r of results) {
@@ -234,6 +329,32 @@ export async function fanoutFetch(cfg, userLogin, token, onPartial) {
   return {
     prs: [...byId.values()].map(normalizePR),
     capped,
+    empty: false,
+  };
+}
+
+// Incremental sync: only PRs updated since the last sync, plus a by-id
+// refetch of open PRs whose CI was still running (CI results don't bump
+// updatedAt, so search alone would miss them). Merged into the cached list.
+export async function deltaFetch(cfg, userLogin, token, sinceMs, cached, onPartial) {
+  const queries = buildDeltaQueries(cfg, userLogin, isoDateTime(sinceMs - DELTA_OVERLAP_MS));
+  if (queries.length === 0) return { prs: [], empty: true };
+  const hotIds = withCI(cfg)
+    ? cached.filter((p) => p.state === 'OPEN' && HOT_CI.has(p.ciState)).map((p) => p.id)
+    : [];
+  const [results, hotNodes] = await Promise.all([
+    mapLimit(queries, CONCURRENCY, (q) => paginate(q, token, onPartial, withCI(cfg))),
+    fetchByIds(hotIds, token, true),
+  ]);
+  const byId = new Map(cached.map((p) => [p.id, p]));
+  for (const node of [...results.flatMap((r) => r.nodes), ...hotNodes]) {
+    const prev = byId.get(node.id);
+    if (!prev || (node.updatedAt || '') >= (prev.updatedAt || '')) {
+      byId.set(node.id, normalizePR(node));
+    }
+  }
+  return {
+    prs: [...byId.values()].filter((pr) => inWindow(pr, cfg)),
     empty: false,
   };
 }

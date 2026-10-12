@@ -62,8 +62,16 @@
     return list.filter((r) => r.nameWithOwner.toLowerCase().includes(q));
   })();
 
+  function intOr(v, min, fallback) {
+    const n = Math.floor(Number(v));
+    return Number.isFinite(n) && v !== '' && v != null ? Math.max(min, n) : fallback;
+  }
+
   function commit() {
-    local.intervalMinutes = Math.max(1, Number(local.intervalMinutes) || 5);
+    local.intervalMinutes = intOr(local.intervalMinutes, 1, 5);
+    local.mergedDays = intOr(local.mergedDays, 1, 7);
+    local.openCreatedDays = intOr(local.openCreatedDays, 0, 90);
+    local.pauseAfterHours = intOr(local.pauseAfterHours, 0, 2);
     settingsStore.set({ ...local });
     onScopeChange();
   }
@@ -307,6 +315,22 @@
         <span>Refresh interval (min)</span>
         <input type="number" min="1" bind:value={local.intervalMinutes} on:change={commit} />
       </label>
+      <label class="adv-check">
+        <input type="checkbox" bind:checked={local.trackCI} on:change={commit} />
+        Track CI status
+      </label>
+      <label class="adv">
+        <span>Pause refresh after tab hidden for (h, 0 = never)</span>
+        <input type="number" min="0" bind:value={local.pauseAfterHours} on:change={commit} />
+      </label>
+      <label class="adv">
+        <span>Open PRs created in last (days, 0 = all)</span>
+        <input type="number" min="0" bind:value={local.openCreatedDays} on:change={commit} />
+      </label>
+      <label class="adv">
+        <span>Merged PRs from last (days)</span>
+        <input type="number" min="1" bind:value={local.mergedDays} on:change={commit} />
+      </label>
       <button type="button" class="danger" on:click={clearCache}>Clear cache</button>
     {/if}
   </section>
@@ -471,6 +495,13 @@
     font-size: 0.78rem;
     color: #555;
     margin-top: 0.4rem;
+  }
+  label.adv-check {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.78rem;
+    color: #555;
   }
   label.adv {
     display: flex;

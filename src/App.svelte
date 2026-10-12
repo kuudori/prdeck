@@ -5,7 +5,7 @@
   import PRList from './components/PRList.svelte';
   import ErrorBanner from './components/ErrorBanner.svelte';
 
-  import { fanoutFetch, fetchViewerLogin } from './lib/github.js';
+  import { fullFetch, deltaFetch, scopeKey, fetchViewerLogin } from './lib/github.js';
   import {
     getAllPRs,
     replaceAllPRs,
@@ -33,8 +33,22 @@
   } from './lib/stores.js';
   import { hasToken as tokenPresent, hasScope as scopePresent } from './lib/status.js';
 
+  // A full sync refetches every PR in scope; the ones in between only fetch
+  // what changed. This bounds how long a missed change (a PR leaving scope,
+  // a CI re-run) can go unnoticed.
+  const FULL_SYNC_EVERY_MS = 60 * 60_000;
+  // Opening the page or returning to the tab skips the refresh if the last
+  // sync is younger than this.
+  const FRESH_MS = 60_000;
+
   let timer;
   let bootDone = false;
+  let hiddenSince = null;
+  // Set when a refresh is requested while one is already running (e.g. a
+  // scope change mid-sync); the running one re-runs once it finishes.
+  let rerunQueued = false;
+  // { lastSyncAt, lastFullSyncAt, scopeKey, capped }, mirrored in IDB meta.
+  let sync = {};
 
   $: hasToken = tokenPresent($tokenStore);
   $: hasScope = scopePresent($settingsStore);
@@ -63,13 +77,17 @@
       errorStore.push({ kind: 'idb', message: 'Local storage unavailable; running in memory only.', sticky: true });
       return;
     }
-    const [cached, viewed, observed, dismissed, login] = await Promise.all([
+    const [cached, viewed, observed, dismissed, login, syncMeta] = await Promise.all([
       getAllPRs(),
       getAllViewed(),
       getAllObserved(),
       getMeta('lastDismissedAt'),
       getMeta('userLogin'),
+      getMeta('sync'),
     ]);
+    sync = syncMeta || {};
+    lastRefreshAtStore.set(sync.lastSyncAt || 0);
+    cappedStore.set(sync.capped || []);
     prsStore.set(cached);
     viewedStore.set(viewed);
     observedStore.set(observed);
@@ -92,8 +110,11 @@
     }
   }
 
-  async function refresh(reason) {
-    if ($refreshingStore) return;
+  async function refresh(reason, { forceFull = false } = {}) {
+    if ($refreshingStore) {
+      rerunQueued = true;
+      return;
+    }
     const token = ($tokenStore || '').trim();
     const settings = $settingsStore;
     if (!tokenPresent(token)) return;
@@ -109,13 +130,22 @@
         if (!login) return;
       }
 
-      const { prs, capped, empty } = await fanoutFetch(
-        settings,
-        login,
-        token,
-        (partial) => errorStore.push({ kind: 'graphqlPartial', message: `Partial data: ${partial.errors[0].message}` })
-      );
-      if (empty) return;
+      const startedAt = Date.now();
+      const key = scopeKey(settings, login);
+      const full =
+        forceFull ||
+        !sync.lastSyncAt ||
+        sync.scopeKey !== key ||
+        startedAt - (sync.lastFullSyncAt || 0) > FULL_SYNC_EVERY_MS;
+      const onPartial = (partial) =>
+        errorStore.push({ kind: 'graphqlPartial', message: `Partial data: ${partial.errors[0].message}` });
+
+      const result = full
+        ? await fullFetch(settings, login, token, onPartial)
+        : await deltaFetch(settings, login, token, sync.lastSyncAt, $prsStore, onPartial);
+      if (result.empty) return;
+      const { prs } = result;
+      const capped = full ? result.capped : sync.capped || [];
 
       const newlyObserved = await markObservedBulk(prs);
 
@@ -127,11 +157,17 @@
         lastDismissedAtStore.set(dismissed);
       }
 
-      // Replace cache only when we actually got data, to avoid wiping on
-      // transient empty responses. Open PRs that closed and merged PRs that
-      // age past the 7-day window naturally drop out this way.
-      if (prs.length > 0) await replaceAllPRs(prs);
-      await setMeta('lastFullRefreshAt', Date.now());
+      // A full sync replaces the cache only when it actually got data, to
+      // avoid wiping on transient empty responses. A delta result is the
+      // cache itself with changes applied, so it is always written.
+      if (prs.length > 0 || !full) await replaceAllPRs(prs);
+      sync = {
+        lastSyncAt: startedAt,
+        lastFullSyncAt: full ? startedAt : sync.lastFullSyncAt,
+        scopeKey: key,
+        capped,
+      };
+      await setMeta('sync', sync);
 
       prsStore.set(prs);
       if (newlyObserved.length > 0) {
@@ -143,7 +179,7 @@
         });
       }
       cappedStore.set(capped);
-      lastRefreshAtStore.set(Date.now());
+      lastRefreshAtStore.set(startedAt);
 
       errorStore.clearKind('auth');
       errorStore.clearKind('rateLimit');
@@ -154,13 +190,25 @@
     } finally {
       refreshingStore.set(false);
     }
+    if (rerunQueued) {
+      rerunQueued = false;
+      await refresh('queued');
+    }
+  }
+
+  // "Away" is approximated as how long this tab has been in the background;
+  // a page can't see activity in other tabs or apps.
+  function isAway() {
+    const hours = Number($settingsStore.pauseAfterHours) || 0;
+    return hours > 0 && hiddenSince !== null && Date.now() - hiddenSince > hours * 3600_000;
   }
 
   function scheduleTick() {
     clearTimeout(timer);
-    if (document.hidden) return;
     const ms = Math.max(1, $settingsStore.intervalMinutes) * 60 * 1000;
     timer = setTimeout(async () => {
+      // Paused while away; onVisibilityChange restarts the timer.
+      if (isAway()) return;
       await refresh('interval');
       scheduleTick();
     }, ms);
@@ -168,11 +216,11 @@
 
   function onVisibilityChange() {
     if (document.hidden) {
-      clearTimeout(timer);
+      hiddenSince = Date.now();
       return;
     }
-    const age = Date.now() - $lastRefreshAtStore;
-    if (age > 60_000) refresh('visibility');
+    hiddenSince = null;
+    if (Date.now() - $lastRefreshAtStore > FRESH_MS) refresh('visibility');
     scheduleTick();
   }
 
@@ -214,9 +262,10 @@
   }
 
   onMount(async () => {
+    if (document.hidden) hiddenSince = Date.now();
     await hydrateFromCache();
     bootDone = true;
-    if (hasToken && hasScope) await refresh('initial');
+    if (hasToken && hasScope && Date.now() - $lastRefreshAtStore > FRESH_MS) await refresh('initial');
     scheduleTick();
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('online', onOnline);
@@ -235,7 +284,11 @@
   <main>
     <header>
       <div class="header-actions">
-        <button type="button" on:click={() => refresh('manual')} disabled={$refreshingStore || !hasToken || !hasScope}>
+        <button
+          type="button"
+          title="Shift-click for a full resync"
+          on:click={(e) => refresh('manual', { forceFull: e.shiftKey })}
+          disabled={$refreshingStore || !hasToken || !hasScope}>
           {#if $refreshingStore}<span class="rainbow">updating…</span>{:else}↻ Refresh{/if}
         </button>
       </div>

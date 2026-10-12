@@ -36,7 +36,7 @@ The left sidebar walks you through three steps.
 At the top of the list are two tabs.
 
 - **opened.** Open PRs in your scope. The badge shows how many are new or have changed since you last looked at them.
-- **recently merged.** PRs merged in the last 7 days. The badge shows how many merged without you ever clicking through them.
+- **recently merged.** PRs merged in the last 7 days (configurable in **Advanced**). The badge shows how many merged without you ever clicking through them.
 
 ## Status
 
@@ -68,7 +68,7 @@ title:bugfix author:alice -is:draft review:approved
 | `label:`   | label name                                                       |
 | `status:`  | `new`, `updated`, `seen`                                         |
 | `review:`  | `approved`, `changes-requested`, `review-required`, `none`       |
-| `ci:`      | `success`, `failure`, `pending`, `error`, `none`                 |
+| `ci:`      | `success`, `failure`, `pending`, `error`, `none` (needs **Track CI status**) |
 | `is:`      | `draft`                                                          |
 
 Prefix any token with `-` to negate it (`-author:dependabot`, `-is:draft`). Multiple tokens are AND-ed together. There is no `OR`.
@@ -77,9 +77,24 @@ PRs hidden by the search show up in a collapsible "N hidden" section under the l
 
 ## Refreshing
 
-The app refreshes on a timer (default every 5 minutes, configurable in **Advanced**). It also refreshes when you bring the tab back to the foreground if the cache is more than a minute old, and when the network comes back online.
+The app refreshes on a timer (default every 5 minutes). The timer keeps running while the tab is in the background, so the list is current when you come back. Once the tab has been hidden for longer than the pause setting (default 2 hours), background refreshes stop until you look at the tab again. Your activity in other tabs and apps is invisible to the page, so "away" means "hasn't looked at prdeck".
 
-The manual `↻ Refresh` button in the top right runs an immediate fetch.
+It also refreshes when you open the page or bring the tab back, if the last refresh is more than a minute old, and when the network comes back online.
+
+There are two kinds of refresh.
+
+- **Full sync.** Fetches every PR in scope from scratch. Runs on first load, when you change the scope or the time windows, when the last full sync is more than an hour old, and when you shift-click `↻ Refresh`.
+- **Incremental sync.** Everything else. For each scope it asks only for PRs updated since the last sync (with a 5 minute overlap) and merges them into the cache. CI results don't change a PR's update time, so open PRs whose CI was still running are also refetched directly by ID. Cost grows with how much changed, not with how many PRs you follow.
+
+### Advanced settings
+
+| setting | default | meaning |
+|---|---|---|
+| Track CI status | on | Off skips the CI field everywhere: faster queries, no CI badge, no `ci:` search, no by-ID refetch. |
+| Refresh interval | 5 min | How often the timer fires. |
+| Pause refresh after tab hidden for | 2 h | `0` keeps refreshing forever. |
+| Open PRs created in last | 90 days | `0` means no limit. Open PRs older than this are not shown. |
+| Merged PRs from last | 7 days | Window for the **recently merged** tab. |
 
 ## Project layout
 
@@ -93,9 +108,12 @@ src/
     PRRow.svelte         A single PR row.
     ErrorBanner.svelte   Error and rate-limit banner.
   lib/
-    github.js            GraphQL fetch. One query per scope for open PRs, plus
-                         one per scope for merges in the last 7 days.
-    cache.js             IndexedDB stores: prs, viewed, observed, etags, meta.
+    github.js            GraphQL fetch. Full sync: one query per scope for open
+                         PRs plus one for recent merges. Incremental sync: one
+                         updated-since query per scope plus a by-id refetch of
+                         PRs with CI still running.
+    cache.js             IndexedDB stores: prs, viewed, observed, etags, meta
+                         (meta.sync holds the incremental-sync watermark).
     status.js            classify(pr, viewed, observed, lastDismissedAt) returning
                          NEW / UPDATED / SEEN. Plus hasToken, hasScope, default
                          filter shape.
