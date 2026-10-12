@@ -14,6 +14,7 @@
 
   export let onMarkViewed = () => {};
   export let onMarkUnseen = () => {};
+  export let onToggleWatch = () => {};
 
   const statusOrder = { [STATUS.NEW]: 0, [STATUS.UPDATED]: 1, [STATUS.SEEN]: 2 };
 
@@ -130,7 +131,7 @@
     </div>
   {:else}
     {#each sorted as pr (pr.id)}
-      <PRRow {pr} {onMarkViewed} {onMarkUnseen} />
+      <PRRow {pr} {onMarkViewed} {onMarkUnseen} {onToggleWatch} />
     {/each}
 
     {#if hidden.length > 0}
@@ -140,7 +141,7 @@
           {#each hidden as { pr, reason } (pr.id)}
             <div class="hidden-item">
               <div class="reason-bar">hidden: {reason}</div>
-              <PRRow {pr} {onMarkViewed} {onMarkUnseen} />
+              <PRRow {pr} {onMarkViewed} {onMarkUnseen} {onToggleWatch} />
             </div>
           {/each}
         </div>

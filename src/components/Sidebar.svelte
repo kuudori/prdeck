@@ -10,6 +10,7 @@
   } from '../lib/stores.js';
   import { setMeta, clearAll } from '../lib/cache.js';
   import { fetchViewerAndOrgs, fetchOwnerRepos } from '../lib/github.js';
+  import { notificationsSupported } from '../lib/watch.js';
 
   export let onScopeChange = () => {};
 
@@ -146,6 +147,16 @@
   }
   function reloadOwnersClick() { loadOwners(); }
   function reloadOwnerRepos(login) { loadReposFor(login); }
+
+  const NOTIF_LABEL = { granted: 'allowed', denied: 'blocked', default: 'not asked' };
+  let notifPermission = notificationsSupported() ? Notification.permission : 'unsupported';
+
+  async function enableNotifications() {
+    try { notifPermission = await Notification.requestPermission(); } catch {}
+  }
+  function testNotification() {
+    new Notification('prdeck', { body: 'Notifications work. Belled PRs will show up like this.' });
+  }
 
   async function clearCache() {
     if (!confirm('Clear cached PRs, viewed history, and observed records?')) return;
@@ -331,6 +342,16 @@
         <span>Merged PRs from last (days)</span>
         <input type="number" min="1" bind:value={local.mergedDays} on:change={commit} />
       </label>
+      <div class="adv-note">
+        <span>Bell notifications: {NOTIF_LABEL[notifPermission] || 'not supported'}</span>
+        {#if notifPermission === 'default'}
+          <button type="button" class="link" on:click={enableNotifications}>enable</button>
+        {:else if notifPermission === 'granted'}
+          <button type="button" class="link" on:click={testNotification}>test</button>
+        {:else if notifPermission === 'denied'}
+          <small class="hint">allow in the browser's site settings; the tab title still shows (n)</small>
+        {/if}
+      </div>
       <button type="button" class="danger" on:click={clearCache}>Clear cache</button>
     {/if}
   </section>
@@ -495,6 +516,23 @@
     font-size: 0.78rem;
     color: #555;
     margin-top: 0.4rem;
+  }
+  .adv-note {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.35rem;
+    font-size: 0.78rem;
+    color: #555;
+  }
+  .adv-note button.link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: #0969da;
+    cursor: pointer;
+    font: inherit;
+    text-decoration: underline;
   }
   label.adv-check {
     display: flex;

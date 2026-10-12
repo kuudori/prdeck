@@ -15,7 +15,7 @@ const STATIC_VALUES = {
   status: ['new', 'updated', 'seen'],
   review: ['approved', 'changes-requested', 'review-required', 'none'],
   ci: ['success', 'failure', 'pending', 'error', 'none'],
-  is: ['draft'],
+  is: ['draft', 'watched'],
 };
 
 function normReview(d) {
@@ -68,6 +68,7 @@ const FIELD_MATCHERS = {
   is: (pr, v) => {
     const lv = v.toLowerCase();
     if (lv === 'draft') return !!pr.isDraft;
+    if (lv === 'watched') return !!pr.watched;
     return false;
   },
   created: (pr, v) => dateMatch(pr.createdAt, v),

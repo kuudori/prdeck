@@ -305,6 +305,12 @@ async function fetchByIds(ids, token, ci) {
   return results.flatMap(({ data }) => (data?.nodes || []).filter((n) => n && n.id));
 }
 
+// Current state of specific PRs regardless of scope or state, for the bell.
+export async function fetchPRsById(ids, cfg, token) {
+  if (ids.length === 0) return [];
+  return (await fetchByIds(ids, token, withCI(cfg))).map(normalizePR);
+}
+
 // Full sync: every PR in scope, from scratch.
 export async function fullFetch(cfg, userLogin, token, onPartial) {
   const openQs = buildQueries(cfg, userLogin);

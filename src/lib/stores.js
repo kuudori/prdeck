@@ -94,6 +94,10 @@ export const viewModeStore = persistedLocal('prdeck.viewMode', 'open');
 export const ownersCacheStore = persistedLocal('prdeck.ownersCache', null);
 export const reposCacheStore = persistedLocal('prdeck.reposCache', {});
 
+// PR id -> { repo, number, title, url, snap } for PRs with the bell on.
+// snap is the state last notified about; see lib/watch.js.
+export const watchedStore = persistedLocal('prdeck.watched', {});
+
 export const prsStore = writable([]);
 export const viewedStore = writable(new Map());
 export const observedStore = writable(new Map());
@@ -132,7 +136,9 @@ function makeErrorStore() {
 export const errorStore = makeErrorStore();
 
 export const annotatedPRsStore = derived(
-  [prsStore, viewedStore, observedStore, lastDismissedAtStore],
-  ([$prs, $viewed, $observed, $lastDismissed]) =>
-    annotate($prs, $viewed, $observed, $lastDismissed)
+  [prsStore, viewedStore, observedStore, lastDismissedAtStore, watchedStore],
+  ([$prs, $viewed, $observed, $lastDismissed, $watched]) =>
+    annotate($prs, $viewed, $observed, $lastDismissed).map((pr) =>
+      $watched[pr.id] ? { ...pr, watched: true } : pr
+    )
 );

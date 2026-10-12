@@ -5,9 +5,11 @@
   import PRList from './components/PRList.svelte';
   import ErrorBanner from './components/ErrorBanner.svelte';
 
-  import { fullFetch, deltaFetch, scopeKey, fetchViewerLogin } from './lib/github.js';
+  import { fullFetch, deltaFetch, scopeKey, fetchViewerLogin, fetchPRsById } from './lib/github.js';
+  import { watchEntry, snapshot, diffEvents, isFinal, showNotification, notificationsSupported } from './lib/watch.js';
   import {
     getAllPRs,
+    putPRs,
     replaceAllPRs,
     getAllViewed,
     getAllObserved,
@@ -30,6 +32,7 @@
     lastRefreshAtStore,
     cappedStore,
     errorStore,
+    watchedStore,
   } from './lib/stores.js';
   import { hasToken as tokenPresent, hasScope as scopePresent } from './lib/status.js';
 
@@ -41,7 +44,17 @@
   // sync is younger than this.
   const FRESH_MS = 60_000;
 
+  // Belled PRs are polled on their own, faster than the main refresh and
+  // even while the away pause holds (being away is what the bell is for).
+  const WATCH_POLL_MS = 60_000;
+
   let timer;
+  let watchTimer;
+  let watchPolling = false;
+  let baseTitle = '';
+  // Bell events that fired while the tab was hidden; shown as "(n)" in the
+  // tab title until the tab is visible again.
+  let unseenBells = 0;
   let bootDone = false;
   let hiddenSince = null;
   // Set when a refresh is requested while one is already running (e.g. a
@@ -220,8 +233,97 @@
       return;
     }
     hiddenSince = null;
+    setUnseenBells(0);
     if (Date.now() - $lastRefreshAtStore > FRESH_MS) refresh('visibility');
     scheduleTick();
+  }
+
+  function setUnseenBells(n) {
+    unseenBells = n;
+    document.title = n > 0 ? `(${n}) ${baseTitle}` : baseTitle;
+  }
+
+  async function toggleWatch(pr) {
+    const on = !!$watchedStore[pr.id];
+    watchedStore.update((w) => {
+      const next = { ...w };
+      if (on) delete next[pr.id];
+      else next[pr.id] = watchEntry(pr);
+      return next;
+    });
+    // Ask on the click itself: browsers only show the prompt from a user gesture.
+    if (!on && notificationsSupported() && Notification.permission === 'default') {
+      try { await Notification.requestPermission(); } catch {}
+    }
+    if (!on) scheduleWatchPoll();
+  }
+
+  async function pollWatched() {
+    const ids = Object.keys($watchedStore);
+    const token = ($tokenStore || '').trim();
+    if (ids.length === 0 || !tokenPresent(token) || watchPolling) return;
+    watchPolling = true;
+    try {
+      const fresh = await fetchPRsById(ids, $settingsStore, token);
+      const before = $watchedStore;
+      // id -> new entry, or null to unwatch (merged/closed).
+      const changes = {};
+      let fired = 0;
+      for (const pr of fresh) {
+        const entry = before[pr.id];
+        if (!entry) continue;
+        const events = diffEvents(entry.snap, snapshot(pr));
+        if (events.length > 0) {
+          showNotification({ ...entry, title: pr.title }, events);
+          fired++;
+        }
+        changes[pr.id] = isFinal(pr) ? null : { ...entry, title: pr.title, snap: snapshot(pr) };
+      }
+      watchedStore.update((w) => {
+        const next = { ...w };
+        for (const [id, entry] of Object.entries(changes)) {
+          if (!(id in next)) continue; // unwatched while the request was in flight
+          if (entry) next[id] = entry;
+          else delete next[id];
+        }
+        return next;
+      });
+      if (fired > 0 && document.hidden) setUnseenBells(unseenBells + fired);
+
+      // Show the fresh state in the list right away instead of at the next
+      // refresh. Skipped mid-refresh: that refresh is about to replace the list.
+      if (!$refreshingStore) {
+        const byId = new Map(fresh.map((pr) => [pr.id, pr]));
+        const kept = $prsStore
+          .filter((p) => byId.has(p.id))
+          .map((p) => byId.get(p.id))
+          .filter((pr) => pr.state !== 'CLOSED');
+        if (kept.length > 0 || fresh.some((pr) => pr.state === 'CLOSED')) {
+          prsStore.update((list) =>
+            list.flatMap((p) => {
+              const f = byId.get(p.id);
+              if (!f) return [p];
+              return f.state === 'CLOSED' ? [] : [f];
+            })
+          );
+          try { await putPRs(kept); } catch {}
+        }
+      }
+    } catch (e) {
+      // The main refresh reports auth/network problems; the poll stays quiet.
+      console.warn('watch poll failed', e);
+    } finally {
+      watchPolling = false;
+    }
+  }
+
+  function scheduleWatchPoll() {
+    clearTimeout(watchTimer);
+    if (Object.keys($watchedStore).length === 0) return;
+    watchTimer = setTimeout(async () => {
+      await pollWatched();
+      scheduleWatchPoll();
+    }, WATCH_POLL_MS);
   }
 
   function onOnline() {
@@ -262,17 +364,20 @@
   }
 
   onMount(async () => {
+    baseTitle = document.title;
     if (document.hidden) hiddenSince = Date.now();
     await hydrateFromCache();
     bootDone = true;
     if (hasToken && hasScope && Date.now() - $lastRefreshAtStore > FRESH_MS) await refresh('initial');
     scheduleTick();
+    scheduleWatchPoll();
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('online', onOnline);
   });
 
   onDestroy(() => {
     clearTimeout(timer);
+    clearTimeout(watchTimer);
     document.removeEventListener('visibilitychange', onVisibilityChange);
     window.removeEventListener('online', onOnline);
   });
@@ -303,7 +408,7 @@
       <Filters />
     {/if}
 
-    <PRList onMarkViewed={markViewed} onMarkUnseen={markUnseen} />
+    <PRList onMarkViewed={markViewed} onMarkUnseen={markUnseen} onToggleWatch={toggleWatch} />
   </main>
 </div>
 

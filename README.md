@@ -71,13 +71,26 @@ Plain words match the PR title (case-insensitive substring), so `fix flaky` keep
 | `status:`  | `new`, `updated`, `seen`                                         |
 | `review:`  | `approved`, `changes-requested`, `review-required`, `none`       |
 | `ci:`      | `success`, `failure`, `pending`, `error`, `none` (needs **Track CI status**) |
-| `is:`      | `draft`                                                          |
+| `is:`      | `draft`, `watched` (bell on)                                     |
 
 `author:`, `repo:` and `label:` match the whole value. Put `~` after the colon to match a substring instead: `repo:~hyperfleet`, `label:~"ok-to"`, `-author:~bot`.
 
 Prefix any token with `-` to negate it (`-author:dependabot`, `-is:draft`, `-wip`). Multiple tokens are AND-ed together. There is no `OR`.
 
 PRs hidden by the search show up in a collapsible "N hidden" section under the list, with the reason they were hidden printed above each row.
+
+## Bell
+
+Click the bell on a row to get notified when that PR changes:
+
+- new commits pushed
+- review decision changes (approved, changes requested, review required), or a new review
+- CI finishes (only with **Track CI status** on)
+- merged or closed. The bell turns itself off after this.
+
+Comments don't ring the bell; CI bots comment on every re-test.
+
+Belled PRs are checked by ID every minute, separately from the main refresh. This check keeps running even when the "away" pause has stopped normal refreshes, because being away is when the bell is useful. The first bell click asks for browser notification permission. **Advanced** shows the current permission and a test button. Notifications that fire while the tab is in the background also show as `(n)` in the tab title until you come back, which works even when browser notifications are blocked.
 
 ## Refreshing
 
@@ -125,7 +138,8 @@ src/
                          search syntax.
     stores.js            Svelte stores. Persisted to localStorage: token,
                          settings, filters, sort, sidebar collapse, view mode,
-                         owner and repo caches.
+                         owner and repo caches, belled PRs.
+    watch.js             Bell: per-PR snapshots, change detection, notifications.
 ```
 
 ## Notes
